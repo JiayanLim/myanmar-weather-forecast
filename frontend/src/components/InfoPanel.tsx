@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useForecastStore } from '../data/ForecastStore';
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -16,11 +17,13 @@ function formatDt(iso: string): string {
 }
 
 export function InfoPanel() {
-  const { showInfoPanel, toggleInfoPanel, metadata } = useForecastStore((s) => ({
-    showInfoPanel: s.showInfoPanel,
-    toggleInfoPanel: s.toggleInfoPanel,
-    metadata: s.metadata,
-  }));
+  const { showInfoPanel, toggleInfoPanel, metadata } = useForecastStore(
+    useShallow((s) => ({
+      showInfoPanel: s.showInfoPanel,
+      toggleInfoPanel: s.toggleInfoPanel,
+      metadata: s.metadata,
+    })),
+  );
 
   if (!showInfoPanel) return null;
 

@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useForecastStore } from '../data/ForecastStore';
 import type { VariableKey } from '../data/types';
 
@@ -7,10 +8,12 @@ const VARIABLES: { key: VariableKey; label: string; icon: string }[] = [
 ];
 
 export function VariableSwitcher() {
-  const { activeVariable, setVariable } = useForecastStore((s) => ({
-    activeVariable: s.activeVariable,
-    setVariable: s.setVariable,
-  }));
+  const { activeVariable, setVariable } = useForecastStore(
+    useShallow((s) => ({
+      activeVariable: s.activeVariable,
+      setVariable: s.setVariable,
+    })),
+  );
 
   return (
     <div className="flex rounded overflow-hidden border border-wx-border">

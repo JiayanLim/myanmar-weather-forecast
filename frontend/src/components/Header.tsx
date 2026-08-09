@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useForecastStore } from '../data/ForecastStore';
 
 function formatInitTime(iso: string): string {
@@ -6,12 +7,14 @@ function formatInitTime(iso: string): string {
 }
 
 export function Header() {
-  const { metadata, isLoaded, isDemo, toggleInfoPanel } = useForecastStore((s) => ({
-    metadata: s.metadata,
-    isLoaded: s.isLoaded,
-    isDemo: s.metadata?.is_demo ?? false,
-    toggleInfoPanel: s.toggleInfoPanel,
-  }));
+  const { metadata, isLoaded, isDemo, toggleInfoPanel } = useForecastStore(
+    useShallow((s) => ({
+      metadata: s.metadata,
+      isLoaded: s.isLoaded,
+      isDemo: s.metadata?.is_demo ?? false,
+      toggleInfoPanel: s.toggleInfoPanel,
+    })),
+  );
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-wx-panel border-b border-wx-border shrink-0 z-10">

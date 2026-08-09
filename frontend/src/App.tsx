@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { WeatherMap } from './map/WeatherMap';
 import { Header } from './components/Header';
 import { DemoBanner } from './components/DemoBanner';
@@ -12,13 +13,15 @@ import { loadForecast } from './data/ForecastLoader';
 const DATA_URL = import.meta.env.VITE_DATA_URL ?? './data';
 
 export function App() {
-  const { setData, setError, setLoading, isLoaded, error } = useForecastStore((s) => ({
-    setData: s.setData,
-    setError: s.setError,
-    setLoading: s.setLoading,
-    isLoaded: s.isLoaded,
-    error: s.error,
-  }));
+  const { setData, setError, setLoading, isLoaded, error } = useForecastStore(
+    useShallow((s) => ({
+      setData: s.setData,
+      setError: s.setError,
+      setLoading: s.setLoading,
+      isLoaded: s.isLoaded,
+      error: s.error,
+    })),
+  );
 
   useEffect(() => {
     setLoading(true);
