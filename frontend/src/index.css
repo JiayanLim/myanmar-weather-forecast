@@ -1,0 +1,79 @@
+@import 'maplibre-gl/dist/maplibre-gl.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #0f1117;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.maplibregl-canvas {
+  outline: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #1a1d27;
+}
+::-webkit-scrollbar-thumb {
+  background: #2d3148;
+  border-radius: 2px;
+}
+
+/* Range input styling */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+}
+
+input[type='range']::-webkit-slider-track {
+  background: #2d3148;
+  border-radius: 4px;
+  height: 4px;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #4f9cf9;
+  border-radius: 50%;
+  height: 16px;
+  width: 16px;
+  margin-top: -6px;
+  transition: background 0.15s;
+}
+
+input[type='range']:hover::-webkit-slider-thumb {
+  background: #7bb8fb;
+}
+
+input[type='range']::-moz-range-track {
+  background: #2d3148;
+  border-radius: 4px;
+  height: 4px;
+}
+
+input[type='range']::-moz-range-thumb {
+  background: #4f9cf9;
+  border: none;
+  border-radius: 50%;
+  height: 16px;
+  width: 16px;
+}
