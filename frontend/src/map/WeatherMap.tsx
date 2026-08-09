@@ -4,20 +4,13 @@ import { useForecastStore } from '../data/ForecastStore';
 import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoader';
 import { applyColorscale, TEMP_LUT, TEMP_MIN, TEMP_MAX, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX } from './colorscales';
 
-const MYANMAR_BOUNDS: maplibregl.LngLatBoundsLike = [
-  [91.5, 8.5],   // SW
-  [102.5, 29.5], // NE
-];
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
-const IMAGE_ID = 'wx-overlay';
-const LAYER_ID = 'wx-layer';
-const SOURCE_ID = 'wx-source';
 
 export function WeatherMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
+  const overlayCanvas = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const overlayReadyRef = useRef(false);
 
   const {
     metadata, temperature, precipitation,
@@ -25,6 +18,18 @@ export function WeatherMap() {
     isLoaded, setInspectorPoint, inspectorPoint,
   } = useForecastStore();
 
+  // Position the canvas overlay to match the forecast bbox on the current map view
+  const positionOverlay = (map: maplibregl.Map, meta: typeof metadata) => {
+    const canvas = overlayCanvas.current;
+    if (!canvas || !meta) return;
+    const { lon_min, lat_max, lon_max, lat_min } = meta.bbox;
+    const nw = map.project([lon_min, lat_max]);
+    const se = map.project([lon_max, lat_min]);
+    canvas.style.left = `${nw.x}px`;
+    canvas.style.top = `${nw.y}px`;
+    canvas.style.width = `${Math.max(1, se.x - nw.x)}px`;
+    canvas.style.height = `${Math.max(1, se.y - nw.y)}px`;
+  };
 
   // Initialise map
   useEffect(() => {
@@ -63,7 +68,6 @@ export function WeatherMap() {
     mapRef.current = map;
 
     map.on('load', () => {
-      // Myanmar boundary GeoJSON
       map.addSource('myanmar-boundary', {
         type: 'geojson',
         data: './geo/myanmar-boundary.geojson',
@@ -89,38 +93,17 @@ export function WeatherMap() {
         },
       });
 
-      // Weather overlay canvas layer
-      const canvas = document.createElement('canvas');
-      canvas.width = 1;
-      canvas.height = 1;
-
-      // Add a canvas source we can update
-      map.addSource(SOURCE_ID, {
-        type: 'canvas',
-        canvas: canvas,
-        coordinates: [
-          [metadata?.bbox.lon_min ?? 92, metadata?.bbox.lat_max ?? 29],
-          [metadata?.bbox.lon_max ?? 102, metadata?.bbox.lat_max ?? 29],
-          [metadata?.bbox.lon_max ?? 102, metadata?.bbox.lat_min ?? 9],
-          [metadata?.bbox.lon_min ?? 92, metadata?.bbox.lat_min ?? 9],
-        ],
-        animate: false,
-      } as unknown as maplibregl.CanvasSourceSpecification);
-
-      map.addLayer({
-        id: LAYER_ID,
-        type: 'raster',
-        source: SOURCE_ID,
-        paint: { 'raster-opacity': 0.85 },
-      }, 'myanmar-outline');
-
-      overlayReadyRef.current = false;
+      // Reposition overlay on initial load
+      positionOverlay(map, useForecastStore.getState().metadata);
     });
 
-    // Navigation controls
+    // Reposition overlay when map pans/zooms
+    const onMove = () => positionOverlay(map, useForecastStore.getState().metadata);
+    map.on('move', onMove);
+    map.on('resize', onMove);
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 
-    // Click handler for point inspector
     map.on('click', (e) => {
       const { lng, lat } = e.lngLat;
       useForecastStore.getState().setInspectorPoint({ lat, lon: lng });
@@ -136,46 +119,37 @@ export function WeatherMap() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Update overlay when data or hour changes
+  // Draw weather data onto the HTML canvas overlay
   useEffect(() => {
-    if (!mapRef.current || !isLoaded || !metadata) return;
+    const canvas = overlayCanvas.current;
     const map = mapRef.current;
+    if (!canvas || !isLoaded || !metadata) return;
 
-    const updateCanvas = () => {
-      const { n_lat, n_lon } = metadata.grid;
-      const data = activeVariable === 'temperature_2m' ? temperature : precipitation;
-      if (!data) return;
+    const { n_lat, n_lon } = metadata.grid;
+    const data = activeVariable === 'temperature_2m' ? temperature : precipitation;
+    if (!data) return;
 
-      const frame = getFrame(data, currentHour, n_lat, n_lon);
-      const [lut, vmin, vmax] =
-        activeVariable === 'temperature_2m'
-          ? [TEMP_LUT, TEMP_MIN, TEMP_MAX]
-          : [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
+    const frame = getFrame(data, currentHour, n_lat, n_lon);
+    const [lut, vmin, vmax] =
+      activeVariable === 'temperature_2m'
+        ? [TEMP_LUT, TEMP_MIN, TEMP_MAX]
+        : [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
 
-      const rgba = applyColorscale(frame, lut, vmin, vmax, n_lat, n_lon);
+    const rgba = applyColorscale(frame, lut, vmin, vmax, n_lat, n_lon);
 
-      const source = map.getSource(SOURCE_ID) as maplibregl.CanvasSource | undefined;
-      if (!source) return;
-
-      // Get the canvas from the source
-      const canvasEl = (source as unknown as { _canvas: HTMLCanvasElement })._canvas;
-      if (!canvasEl) return;
-
-      canvasEl.width = n_lon;
-      canvasEl.height = n_lat;
-      const ctx = canvasEl.getContext('2d');
-      if (!ctx) return;
-
-      const imgData = new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), n_lon, n_lat);
-      ctx.putImageData(imgData, 0, 0);
-      (source as unknown as { play: () => void }).play?.();
-    };
-
-    if (map.isStyleLoaded()) {
-      updateCanvas();
-    } else {
-      map.once('idle', updateCanvas);
+    // Update canvas pixel data
+    canvas.width = n_lon;
+    canvas.height = n_lat;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.putImageData(
+        new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), n_lon, n_lat),
+        0, 0,
+      );
     }
+
+    // Position canvas to match map projection
+    if (map) positionOverlay(map, metadata);
   }, [isLoaded, metadata, activeVariable, currentHour, temperature, precipitation]);
 
   // Point inspector popup
@@ -214,11 +188,10 @@ export function WeatherMap() {
       const dt = new Date(validTime);
       const timeStr = dt.toUTCString().replace(' GMT', ' UTC');
 
-      const precipDisclosure = metadata.variables.precipitation.temporal_semantics;
       const leadH = currentHour;
-      const endDt = new Date(dt.getTime() + 3600_000);
-      const endStr = `${endDt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
+      const endDt = new Date(dt.getTime() + 3_600_000);
       const startStr = `${dt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
+      const endStr = `${endDt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
 
       content = `
         <div class="wx-popup">
@@ -256,10 +229,20 @@ export function WeatherMap() {
   }, [inspectorPoint, currentHour, isLoaded, metadata, temperature, precipitation]);
 
   return (
-    <div
-      ref={mapContainer}
-      className="absolute inset-0 w-full h-full"
-      style={{ background: '#0f1117' }}
-    />
+    <div style={{ position: 'absolute', inset: 0, background: '#0f1117' }}>
+      {/* MapLibre map fills the container */}
+      <div ref={mapContainer} style={{ position: 'absolute', inset: 0 }} />
+      {/* Weather overlay — drawn via HTML canvas, repositioned on map move */}
+      <canvas
+        ref={overlayCanvas}
+        style={{
+          position: 'absolute',
+          pointerEvents: 'none',
+          opacity: 0.85,
+          imageRendering: 'pixelated',
+          display: isLoaded ? 'block' : 'none',
+        }}
+      />
+    </div>
   );
 }
