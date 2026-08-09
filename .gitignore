@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+*.egg-info/
+dist/
+build/
+*.so
+
+# uv
+.python-version
+
+# Earth2Studio / model weights (large binaries — never commit)
+*.ckpt
+*.pickle
+*.pt
+*.pth
+*.zarr/
+*.zarr
+outputs/
+
+# Production forecast artifacts (generated offline, not committed)
+data/forecast/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
