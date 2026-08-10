@@ -19,11 +19,11 @@ export function Timeline() {
   } = useForecastStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const maxHour = metadata?.forecast_horizon_hours ?? 168;
+  const maxHour = metadata?.forecast_horizon_hours ?? 48;
 
   const tick = useCallback(() => {
     const store = useForecastStore.getState();
-    if (store.currentHour >= (store.metadata?.forecast_horizon_hours ?? 168)) {
+    if (store.currentHour >= (store.metadata?.forecast_horizon_hours ?? 48)) {
       useForecastStore.getState().setHour(0);
     } else {
       store.stepForward();
@@ -126,7 +126,9 @@ export function Timeline() {
         <div className="flex items-center gap-1 text-[9px] text-slate-600">
           <span>0h</span>
           <span className="mx-1">·</span>
-          <span>168h</span>
+          <span>24h</span>
+          <span className="mx-1">·</span>
+          <span>48h</span>
         </div>
       </div>
     </div>

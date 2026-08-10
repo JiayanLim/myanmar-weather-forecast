@@ -56,7 +56,7 @@ export function InfoPanel() {
                 <Row label="Display resolution" value={`${metadata.display_resolution_deg}° (~5.5 km) — interpolated`} />
               )}
               <Row label="Initialization" value={metadata.initialization_source} />
-              <Row label="Horizon" value={`${metadata.forecast_horizon_hours}h (7 days)`} />
+              <Row label="Horizon" value={`${metadata.forecast_horizon_hours}h (2 days)`} />
               <Row label="Init time" value={formatDt(metadata.initialization_time)} />
               <Row label="Generated" value={formatDt(metadata.forecast_generated_at)} />
               {metadata.inference_config && (
@@ -67,12 +67,8 @@ export function InfoPanel() {
             <hr className="border-wx-border" />
 
             <div className="flex flex-col gap-2">
-              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Variables</h3>
+              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Variable</h3>
               <div className="flex flex-col gap-2 text-sm">
-                <div>
-                  <span className="text-white font-medium">Temperature (2m)</span>
-                  <p className="text-slate-400 text-xs mt-0.5">{metadata.variables.temperature_2m.temporal_semantics}</p>
-                </div>
                 <div>
                   <span className="text-white font-medium">Precipitation</span>
                   <p className="text-slate-400 text-xs mt-0.5">{metadata.variables.precipitation.temporal_semantics}</p>

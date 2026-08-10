@@ -2,13 +2,12 @@ import type { ForecastMetadata } from './types';
 
 export interface ForecastData {
   metadata: ForecastMetadata;
-  temperature: Float32Array;
   precipitation: Float32Array;
 }
 
 /**
  * Load forecast artifacts from the given base URL.
- * Returns metadata + flat Float32Array for each variable.
+ * Returns metadata + flat Float32Array for precipitation.
  * Layout: [n_times × n_lat × n_lon] C-order (row-major).
  */
 export async function loadForecast(baseUrl: string): Promise<ForecastData> {
@@ -17,26 +16,17 @@ export async function loadForecast(baseUrl: string): Promise<ForecastData> {
     return base + path;
   };
 
-  // Load metadata first
   const metaRes = await fetch(url('forecast.json'));
   if (!metaRes.ok) throw new Error(`Failed to load forecast.json: ${metaRes.statusText}`);
   const metadata: ForecastMetadata = await metaRes.json();
 
-  // Load binary arrays in parallel
-  const [tempBuf, precipBuf] = await Promise.all([
-    fetch(url('temperature.bin')).then((r) => {
-      if (!r.ok) throw new Error(`Failed to load temperature.bin: ${r.statusText}`);
-      return r.arrayBuffer();
-    }),
-    fetch(url('precipitation.bin')).then((r) => {
-      if (!r.ok) throw new Error(`Failed to load precipitation.bin: ${r.statusText}`);
-      return r.arrayBuffer();
-    }),
-  ]);
+  const precipBuf = await fetch(url('precipitation.bin')).then((r) => {
+    if (!r.ok) throw new Error(`Failed to load precipitation.bin: ${r.statusText}`);
+    return r.arrayBuffer();
+  });
 
   return {
     metadata,
-    temperature: new Float32Array(tempBuf),
     precipitation: new Float32Array(precipBuf),
   };
 }

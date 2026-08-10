@@ -28,7 +28,7 @@ MYANMAR_LAT_MIN, MYANMAR_LAT_MAX = 9.0, 29.0
 MYANMAR_LON_MIN, MYANMAR_LON_MAX = 92.0, 102.0
 N_LAT = 81   # 9N to 29N step 0.25
 N_LON = 41   # 92E to 102E step 0.25
-N_TIMES = 169  # 0h to 168h inclusive
+N_TIMES = 49   # 0h to 48h inclusive
 
 # Fixed init time for reproducibility
 DEMO_INIT_TIME = datetime(2026, 8, 9, 0, 0, 0, tzinfo=timezone.utc)
@@ -138,7 +138,7 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
         "initialization_time": times_utc[0],
         "forecast_generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sic_handling": "demo mode — no real IFS data; sic not applicable",
-        "forecast_horizon_hours": 168,
+        "forecast_horizon_hours": 48,
         "n_times": N_TIMES,
         "spatial_resolution_deg": 0.25,
         "display_resolution_deg": 0.05,
@@ -156,16 +156,6 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
         "lon": lons.tolist(),
         "times_utc": times_utc,
         "variables": {
-            "temperature_2m": {
-                "display_name": "2m Temperature",
-                "units": "degC",
-                "source_variable": "t2m",
-                "temporal_resolution": "hourly",
-                "temporal_semantics": "Point forecast at each hour",
-                "transformation": "K - 273.15",
-                "file": "temperature.bin",
-                "fill_value": -9999.0,
-            },
             "precipitation": {
                 "display_name": "Precipitation",
                 "units": "mm / 1-hour accumulation",
@@ -204,11 +194,6 @@ def main() -> int:
     print(f"Grid: {N_TIMES} times × {N_LAT} lat × {N_LON} lon")
 
     lats, lons = make_lat_lon_grids()
-
-    print("  Generating temperature...", end=" ", flush=True)
-    temp = generate_temperature(lats, lons)
-    write_binary(temp, output_dir / "temperature.bin")
-    print(f"done ({temp.nbytes / 1024:.0f} KB, range [{temp.min():.1f}, {temp.max():.1f}] °C)")
 
     print("  Generating precipitation...", end=" ", flush=True)
     precip = generate_precipitation(lats, lons)

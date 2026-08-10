@@ -1,16 +1,16 @@
 """
-generate_forecast.py — Full Aurora1p5 + IFS forecast pipeline.
+generate_forecast.py — Aurora1p5 + IFS 48-hour Myanmar precipitation forecast.
 
 Requires:
   - earth2studio >= 0.17.0 with --extra data --extra aurora installed
   - IFS open data accessible (ECMWF; Google Cloud mirror default, no credentials)
-  - GPU: CUDA with >= 20 GB VRAM recommended (A100 40/80 GB ideal)
+  - GPU: CUDA T4 (16 GB) or better
 
 Usage:
     uv run python scripts/generate_forecast.py \
         [--init-time YYYY-MM-DDTHH:MM:SSZ]   # defaults to latest IFS 00Z
         [--output-dir data/forecast/] \
-        [--n-hours 168] \
+        [--n-hours 48] \
         [--ifs-source google|aws|ecmwf] \
         [--debug]
 
@@ -19,6 +19,9 @@ IFS variables patched (not available in IFS open data):
     lcc  — zero (IFS open data provides tcc but not individual cloud layer fractions)
     mcc  — zero (same)
     hcc  — zero (same)
+
+Aurora receives its full required input state. Only tp1h is stored to disk;
+temperature is not written (display-only reduction, not model input reduction).
 
 tp1h post-processing:
     Aurora raw output -> Earth2Studio inverse log transform -> physical metres in zarr -> x1000 -> mm / 1h
@@ -31,9 +34,13 @@ tp1h post-processing:
     A configurable sanity threshold (--precip-max-mm) warns if the max exceeds a physical
     upper bound. The data is never silently modified by this check.
 
+T4 memory optimisations (applied automatically on CUDA):
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (reduces fragmentation)
+    - Model converted to bfloat16 (~2.5 GB vs ~5 GB for 1.26B params)
+    - torch.inference_mode() wraps inference (no gradient bookkeeping)
+
 Output:
     data/forecast/forecast.json
-    data/forecast/temperature.bin  — float32 [n_times, n_lat, n_lon] C-order
     data/forecast/precipitation.bin — float32 [n_times, n_lat, n_lon] C-order
 """
 
@@ -41,10 +48,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time as time_module
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Must be set before torch is imported to take effect
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import xarray as xr
@@ -276,6 +287,12 @@ def run_pipeline(
         print(f"  ERROR: Aurora1p5 load failed: {e}")
         return 1
 
+    # T4 memory optimisation: convert to bfloat16 before moving to GPU.
+    # 1.26B params: fp32 ~5 GB → bf16 ~2.5 GB. Aurora uses bf16 internally anyway.
+    if device.type == "cuda":
+        model = model.to(dtype=torch.bfloat16)
+        print(f"  Converted to bfloat16 for T4 memory budget")
+
     # ------------------------------------------------------------------ #
     # Step 4: Run inference
     # ------------------------------------------------------------------ #
@@ -286,26 +303,33 @@ def run_pipeline(
     io = ZarrBackend()
     t2 = time_module.time()
     try:
-        io = e2run.deterministic(
-            time=[init_time],
-            nsteps=n_hours,
-            prognostic=model,
-            data=ifs,
-            io=io,
-            device=device,
-            verbose=True,
-        )
+        # torch.inference_mode disables gradient tracking → saves activation memory
+        with torch.inference_mode():
+            io = e2run.deterministic(
+                time=[init_time],
+                nsteps=n_hours,
+                prognostic=model,
+                data=ifs,
+                io=io,
+                device=device,
+                verbose=True,
+            )
     except Exception as e:
         print(f"  ERROR: Inference failed: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
         return 1
 
+    # Free model weights from GPU before post-processing
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
     inference_time = time_module.time() - t2
     print(f"  Inference completed in {inference_time:.0f}s ({inference_time/60:.1f} min)")
 
     # ------------------------------------------------------------------ #
-    # Step 5: Post-process and write artifacts
+    # Step 5: Post-process and write artifacts (precipitation only)
     # ------------------------------------------------------------------ #
     print(f"\n[5/5] Post-processing and writing artifacts...")
     ds = xr.open_zarr(io.store)
@@ -314,108 +338,57 @@ def run_pipeline(
         print(f"  Raw output variables: {list(ds.data_vars)}")
         print(f"  Lead times: {list(ds.coords.get('lead_time', ['N/A']))[:6]}...")
 
-    # --- t2m ---
-    t2m_raw = ds["t2m"]  # Units: K, shape [batch, time, lead_time, lat, lon]
-
-    # Subset to Myanmar bbox (lat descending in Aurora output)
-    t2m_mm = t2m_raw.sel(
-        lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
-        lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
-    ).squeeze()
-
-    # Ensure lat is ascending (south-to-north for our frontend)
-    if t2m_mm.coords["lat"].values[0] > t2m_mm.coords["lat"].values[-1]:
-        t2m_mm = t2m_mm.isel(lat=slice(None, None, -1))
-
-    t2m_celsius = (t2m_mm.values - 273.15).astype(np.float32)
-    n_lead, n_lat, n_lon = t2m_celsius.shape
-    print(f"  t2m: shape={t2m_celsius.shape}, range=[{t2m_celsius.min():.1f}, {t2m_celsius.max():.1f}] °C")
-
     # --- tp1h ---
     if "tp1h" not in ds:
         print("  ERROR: tp1h not in Aurora1p5 output. Check earth2studio version.")
         return 1
 
     tp1h_raw = ds["tp1h"]
-    tp1h_mm_ds = tp1h_raw.sel(
+    tp1h_ds = tp1h_raw.sel(
         lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
         lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
     ).squeeze()
 
-    if tp1h_mm_ds.coords["lat"].values[0] > tp1h_mm_ds.coords["lat"].values[-1]:
-        tp1h_mm_ds = tp1h_mm_ds.isel(lat=slice(None, None, -1))
+    # Ensure lat is ascending (south-to-north for our frontend)
+    if tp1h_ds.coords["lat"].values[0] > tp1h_ds.coords["lat"].values[-1]:
+        tp1h_ds = tp1h_ds.isel(lat=slice(None, None, -1))
 
     # Earth2Studio aurora1p5.py applies aurora_log_untransform() internally before
     # writing to zarr, so zarr["tp1h"] is already in physical metres (not log-space).
     # aurora_log_untransform: 0.001 * (exp(scaled_tp_1h) - 1) → metres
-    # Correct inverse: just multiply by 1000 to convert m → mm.
-    tp1h_m = tp1h_mm_ds.values.astype(np.float32)
+    # Correct conversion: metres * 1000 → mm / 1-hour accumulation
+    tp1h_m = tp1h_ds.values.astype(np.float32)
     tp1h_mm = np.maximum(tp1h_m * 1000.0, 0.0).astype(np.float32)
-    print(f"  tp1h: range=[{tp1h_mm.min():.4f}, {tp1h_mm.max():.2f}] mm / 1-hour accumulation")
-    print(f"  tp1h unit: mm per 1-hour accumulation period (not instantaneous rate)")
+    print(f"  tp1h: shape={tp1h_mm.shape}, range=[{tp1h_mm.min():.4f}, {tp1h_mm.max():.2f}] mm / 1h")
 
-    # Build lat/lon coordinate arrays from the actual output
-    lats_out = t2m_mm.coords["lat"].values.astype(np.float32)
-    lons_out = t2m_mm.coords["lon"].values.astype(np.float32)
+    lats_out = tp1h_ds.coords["lat"].values.astype(np.float32)
+    lons_out = tp1h_ds.coords["lon"].values.astype(np.float32)
     n_lat_out, n_lon_out = len(lats_out), len(lons_out)
 
-    # Prepend t+0 (analysis/init state)
-    # The Aurora output starts at t+1h. We prepend t+0 from IFS.
-    print("  Fetching t+0 IFS temperature for prepend...")
-    try:
-        init_da = ifs(init_time, ["t2m"])
-        init_t2m = init_da.sel(
-            variable="t2m",
-            lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
-            lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
-        ).squeeze()
-        if init_t2m.coords["lat"].values[0] > init_t2m.coords["lat"].values[-1]:
-            init_t2m = init_t2m.isel(lat=slice(None, None, -1))
-        # Interpolate to same lat/lon as forecast output
-        init_t2m_interp = init_t2m.interp(lat=lats_out, lon=lons_out)
-        t0_celsius = (init_t2m_interp.values - 273.15).astype(np.float32)
-    except Exception as e:
-        print(f"  Warning: could not fetch IFS t+0: {e}. Using first forecast frame.")
-        t0_celsius = t2m_celsius[0]
+    # Prepend t+0: precipitation at init hour is 0 by definition (no prior accumulation)
+    tp1h_full = np.concatenate(
+        [np.zeros((1, n_lat_out, n_lon_out), dtype=np.float32), tp1h_mm], axis=0
+    )
+    n_times = tp1h_full.shape[0]  # n_hours + 1 (e.g. 49 for 48h horizon)
 
-    # Full arrays: [t+0, t+1h, ..., t+n_hours]  shape [n_hours+1, n_lat, n_lon]
-    t2m_full = np.concatenate([t0_celsius[np.newaxis], t2m_celsius], axis=0)
-    tp1h_full = np.concatenate([np.zeros((1, n_lat_out, n_lon_out), dtype=np.float32), tp1h_mm], axis=0)
-    n_times = t2m_full.shape[0]  # should be n_hours + 1 = 169
-
-    print(f"  Final arrays: [{n_times}, {n_lat_out}, {n_lon_out}] = [times, lat, lon]")
-    print(f"  t2m full: [{t2m_full.min():.1f}, {t2m_full.max():.1f}] °C")
+    print(f"  Final array: [{n_times}, {n_lat_out}, {n_lon_out}] = [times, lat, lon]")
     print(f"  tp1h full: [{tp1h_full.min():.4f}, {tp1h_full.max():.4f}] mm / 1h accumulation")
 
-    # Write binary artifacts
-    temp_path = output_dir / "temperature.bin"
-    precip_path = output_dir / "precipitation.bin"
-    temp_path.write_bytes(t2m_full.astype("<f4").tobytes())
-    precip_path.write_bytes(tp1h_full.astype("<f4").tobytes())
-    print(f"  temperature.bin: {temp_path.stat().st_size / 1024:.0f} KB")
-    print(f"  precipitation.bin: {precip_path.stat().st_size / 1024:.0f} KB")
-
-    # Timestamps
+    # Timestamps: t+0 through t+n_hours
     times_utc = [
         (init_time + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
         for h in range(n_times)
     ]
 
-    # Temperature NaN check
-    t2m_nan = int(np.sum(np.isnan(t2m_full)))
-    if t2m_nan > 0:
-        print(f"  WARNING: NaN values in t2m: {t2m_nan}")
-    else:
-        print(f"  t2m NaN check: PASS")
+    # Write binary artifact
+    precip_path = output_dir / "precipitation.bin"
+    precip_path.write_bytes(tp1h_full.astype("<f4").tobytes())
+    print(f"  precipitation.bin: {precip_path.stat().st_size / 1024:.0f} KB")
 
     # Precipitation sanity check
     precip_ok = check_precipitation_sanity(tp1h_full, sanity_max_mm)
     if not precip_ok:
-        print(
-            "  WARNING: Precipitation sanity check FAILED. "
-            "The data has been written as-is. "
-            "Review the transformation pipeline before publishing."
-        )
+        print("  WARNING: Precipitation sanity check FAILED. Data written as-is.")
 
     # Build metadata
     total_time = time_module.time() - t_start
@@ -447,16 +420,6 @@ def run_pipeline(
         "lon": lons_out.tolist(),
         "times_utc": times_utc,
         "variables": {
-            "temperature_2m": {
-                "display_name": "2m Temperature",
-                "units": "degC",
-                "source_variable": "t2m",
-                "temporal_resolution": "hourly",
-                "temporal_semantics": "Point forecast at each hour from Aurora1p5 native hourly rollout",
-                "transformation": "K - 273.15",
-                "file": "temperature.bin",
-                "fill_value": -9999.0,
-            },
             "precipitation": {
                 "display_name": "Precipitation",
                 "units": "mm / 1-hour accumulation",
@@ -495,6 +458,7 @@ def run_pipeline(
             "device": device_desc,
             "ifs_source": ifs_source,
             "patched_vars": list(IFS_PATCH_VARS.keys()),
+            "memory_optimisations": ["bfloat16", "inference_mode", "expandable_segments"],
             "inference_time_seconds": round(inference_time),
             "total_pipeline_time_seconds": round(total_time),
         },
@@ -527,7 +491,7 @@ def main() -> int:
         default="google",
         help="IFS open data mirror (default: google; AWS may be rate-limited)",
     )
-    parser.add_argument("--n-hours", type=int, default=168, help="Forecast hours (default: 168)")
+    parser.add_argument("--n-hours", type=int, default=48, help="Forecast hours (default: 48)")
     parser.add_argument(
         "--precip-max-mm",
         type=float,

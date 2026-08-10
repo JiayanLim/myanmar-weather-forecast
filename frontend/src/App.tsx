@@ -3,7 +3,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { WeatherMap } from './map/WeatherMap';
 import { Header } from './components/Header';
 import { DemoBanner } from './components/DemoBanner';
-import { VariableSwitcher } from './components/VariableSwitcher';
 import { Legend } from './components/Legend';
 import { Timeline } from './components/Timeline';
 import { InfoPanel } from './components/InfoPanel';
@@ -31,7 +30,7 @@ export function App() {
   useEffect(() => {
     setLoading(true);
     loadForecast(DATA_URL)
-      .then((d) => setData(d.metadata, d.temperature, d.precipitation))
+      .then((d) => setData(d.metadata, d.precipitation))
       .catch((err) => setError(String(err)));
   }, [setData, setError, setLoading]);
 
@@ -59,11 +58,6 @@ export function App() {
 
       {/* Map area — flex-1 so it takes all available space */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Variable switcher — floating over map */}
-        <div className="absolute top-3 left-3 z-20">
-          {isLoaded && <VariableSwitcher />}
-        </div>
-
         {/* Legend — floating over map, bottom-left */}
         <div className="absolute bottom-3 left-3 z-20 bg-wx-panel/90 border border-wx-border rounded p-3 min-w-[220px]">
           {isLoaded && <Legend />}

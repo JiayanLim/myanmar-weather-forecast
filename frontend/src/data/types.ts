@@ -57,8 +57,8 @@ export interface ForecastMetadata {
   lon: number[];
   times_utc: string[];
   variables: {
-    temperature_2m: VariableMeta;
     precipitation: VariableMeta;
+    temperature_2m?: VariableMeta;
   };
   data_source_attribution: string;
   model_attribution: string;
@@ -73,5 +73,4 @@ export interface ForecastMetadata {
   is_demo: boolean;
 }
 
-export type VariableKey = 'temperature_2m' | 'precipitation';
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4;

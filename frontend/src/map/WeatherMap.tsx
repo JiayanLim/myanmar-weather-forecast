@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import { useForecastStore } from '../data/ForecastStore';
 import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoader';
-import { renderWithInterpolation, TEMP_LUT, TEMP_MIN, TEMP_MAX, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX } from './colorscales';
+import { renderWithInterpolation, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX } from './colorscales';
 import { DISPLAY_N_LAT, DISPLAY_N_LON } from '../geo/mask';
 
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
@@ -14,8 +14,8 @@ export function WeatherMap() {
   const popupRef = useRef<maplibregl.Popup | null>(null);
 
   const {
-    metadata, temperature, precipitation,
-    activeVariable, currentHour,
+    metadata, precipitation,
+    currentHour,
     isLoaded, setInspectorPoint, inspectorPoint,
     mask,
   } = useForecastStore();
@@ -128,14 +128,10 @@ export function WeatherMap() {
     if (!canvas || !isLoaded || !metadata) return;
 
     const { n_lat, n_lon } = metadata.grid;
-    const data = activeVariable === 'temperature_2m' ? temperature : precipitation;
-    if (!data) return;
+    if (!precipitation) return;
 
-    const frame = getFrame(data, currentHour, n_lat, n_lon);
-    const [lut, vmin, vmax] =
-      activeVariable === 'temperature_2m'
-        ? [TEMP_LUT, TEMP_MIN, TEMP_MAX]
-        : [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
+    const frame = getFrame(precipitation, currentHour, n_lat, n_lon);
+    const [lut, vmin, vmax] = [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
 
     // Render at display resolution (0.05°) with bilinear interpolation + Myanmar mask
     const rgba = renderWithInterpolation(frame, lut, vmin, vmax, n_lat, n_lon, mask);
@@ -153,7 +149,7 @@ export function WeatherMap() {
 
     // Position canvas to match map projection
     if (map) positionOverlay(map, metadata);
-  }, [isLoaded, metadata, activeVariable, currentHour, temperature, precipitation, mask]);
+  }, [isLoaded, metadata, currentHour, precipitation, mask]);
 
   // Point inspector popup
   useEffect(() => {
@@ -180,9 +176,6 @@ export function WeatherMap() {
           <p class="wx-popup-note">No forecast data for this location.</p>
         </div>`;
     } else {
-      const temp = temperature
-        ? getPointValue(temperature, currentHour, grid.latIdx, grid.lonIdx, n_lat, n_lon)
-        : NaN;
       const precip = precipitation
         ? getPointValue(precipitation, currentHour, grid.latIdx, grid.lonIdx, n_lat, n_lon)
         : NaN;
@@ -200,10 +193,6 @@ export function WeatherMap() {
         <div class="wx-popup">
           <div class="wx-popup-title">Myanmar</div>
           <div class="wx-popup-time">${timeStr}</div>
-          <div class="wx-popup-row">
-            <span class="wx-popup-label">Temperature</span>
-            <span class="wx-popup-value">${isNaN(temp) ? '—' : temp.toFixed(1)} °C</span>
-          </div>
           <div class="wx-popup-row">
             <span class="wx-popup-label">Precipitation</span>
             <span class="wx-popup-value">${isNaN(precip) ? '—' : precip.toFixed(2)} mm</span>
@@ -229,7 +218,7 @@ export function WeatherMap() {
     });
 
     popupRef.current = popup;
-  }, [inspectorPoint, currentHour, isLoaded, metadata, temperature, precipitation]);
+  }, [inspectorPoint, currentHour, isLoaded, metadata, precipitation]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: '#0f1117' }}>

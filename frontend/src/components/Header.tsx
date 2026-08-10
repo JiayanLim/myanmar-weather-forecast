@@ -8,7 +8,7 @@ function formatInitTime(iso: string): string {
 
 function isForecastStale(generatedAtIso: string): boolean {
   const ageMs = Date.now() - new Date(generatedAtIso).getTime();
-  return ageMs > 48 * 3_600_000;
+  return ageMs > 72 * 3_600_000; // stale after 72h (forecast horizon is 48h)
 }
 
 export function Header() {
@@ -26,7 +26,7 @@ export function Header() {
       <div className="flex flex-col">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold tracking-widest text-white uppercase">
-            Myanmar Weather
+            Myanmar 48h Precipitation
           </span>
           {isDemo && (
             <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-500 text-black">
