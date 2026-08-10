@@ -43,13 +43,25 @@ export function InfoPanel() {
 
         {metadata ? (
           <div className="flex flex-col gap-4">
+            {!metadata.is_demo && (
+              <div className="text-xs font-semibold text-wx-accent uppercase tracking-wider">
+                Latest Forecast
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <Row label="Model" value={`${metadata.model} ${metadata.model_version}`} />
-              <Row label="Resolution" value={`${metadata.spatial_resolution_deg}° (~28 km)`} />
+              <Row label="Model resolution" value={`${metadata.spatial_resolution_deg}° (~28 km)`} />
+              {metadata.display_resolution_deg != null && (
+                <Row label="Display resolution" value={`${metadata.display_resolution_deg}° (~5.5 km) — interpolated`} />
+              )}
               <Row label="Initialization" value={metadata.initialization_source} />
               <Row label="Horizon" value={`${metadata.forecast_horizon_hours}h (7 days)`} />
               <Row label="Init time" value={formatDt(metadata.initialization_time)} />
               <Row label="Generated" value={formatDt(metadata.forecast_generated_at)} />
+              {metadata.inference_config && (
+                <Row label="Generated on" value={metadata.inference_config.device} />
+              )}
             </div>
 
             <hr className="border-wx-border" />
@@ -90,7 +102,8 @@ export function InfoPanel() {
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Limitations</h3>
               <ul className="text-[11px] text-slate-400 list-disc list-inside space-y-1">
-                <li>The 0.25° forecast represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
+                <li>The 0.25° model grid (~28 km) represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
+                <li>The display uses bilinear interpolation to 0.05° for visual clarity. This does not add forecast information beyond the native 0.25° model resolution.</li>
                 <li>Forecast skill degrades significantly beyond 3–5 days.</li>
                 <li>Precipitation represents total accumulation during the indicated 1-hour forecast period, not an instantaneous rainfall rate.</li>
                 {metadata.is_demo && (

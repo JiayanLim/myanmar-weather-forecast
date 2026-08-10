@@ -141,6 +141,9 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
         "forecast_horizon_hours": 168,
         "n_times": N_TIMES,
         "spatial_resolution_deg": 0.25,
+        "display_resolution_deg": 0.05,
+        "spatial_interpolation": "bilinear",
+        "boundary_mask": "Myanmar administrative boundary (GeoJSON scanline rasterization)",
         "region": "Myanmar",
         "bbox": {
             "lat_min": MYANMAR_LAT_MIN,
@@ -165,7 +168,7 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
             },
             "precipitation": {
                 "display_name": "Precipitation",
-                "units": "mm/h",
+                "units": "mm / 1-hour accumulation",
                 "source_variable": "tp1h",
                 "temporal_resolution": "hourly",
                 "temporal_semantics": "Total precipitation accumulated over 1-hour forecast period",
@@ -173,7 +176,7 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
                     "Precipitation values represent total rainfall accumulated during each "
                     "1-hour forecast period. These are not instantaneous rainfall rates."
                 ),
-                "transformation": "exp(raw_model_output) * 1000 (log-untransform + m to mm); demo uses synthetic values",
+                "transformation": "demo uses synthetic physical values in mm / 1-hour accumulation (no log transform applied)",
                 "native_output": True,
                 "file": "precipitation.bin",
                 "fill_value": -9999.0,

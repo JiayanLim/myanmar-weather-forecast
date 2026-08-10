@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import { useForecastStore } from '../data/ForecastStore';
 import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoader';
-import { applyColorscale, TEMP_LUT, TEMP_MIN, TEMP_MAX, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX } from './colorscales';
+import { renderWithInterpolation, TEMP_LUT, TEMP_MIN, TEMP_MAX, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX } from './colorscales';
+import { DISPLAY_N_LAT, DISPLAY_N_LON } from '../geo/mask';
 
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
 
@@ -16,6 +17,7 @@ export function WeatherMap() {
     metadata, temperature, precipitation,
     activeVariable, currentHour,
     isLoaded, setInspectorPoint, inspectorPoint,
+    mask,
   } = useForecastStore();
 
   // Position the canvas overlay to match the forecast bbox on the current map view
@@ -135,11 +137,12 @@ export function WeatherMap() {
         ? [TEMP_LUT, TEMP_MIN, TEMP_MAX]
         : [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
 
-    const rgba = applyColorscale(frame, lut, vmin, vmax, n_lat, n_lon);
+    // Render at display resolution (0.05°) with bilinear interpolation + Myanmar mask
+    const rgba = renderWithInterpolation(frame, lut, vmin, vmax, n_lat, n_lon, mask);
 
-    // Update canvas pixel data
-    canvas.width = n_lon;
-    canvas.height = n_lat;
+    // Update canvas at display resolution
+    canvas.width = DISPLAY_N_LON;
+    canvas.height = DISPLAY_N_LAT;
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.putImageData(
@@ -150,7 +153,7 @@ export function WeatherMap() {
 
     // Position canvas to match map projection
     if (map) positionOverlay(map, metadata);
-  }, [isLoaded, metadata, activeVariable, currentHour, temperature, precipitation]);
+  }, [isLoaded, metadata, activeVariable, currentHour, temperature, precipitation, mask]);
 
   // Point inspector popup
   useEffect(() => {

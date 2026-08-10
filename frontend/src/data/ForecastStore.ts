@@ -16,6 +16,10 @@ interface ForecastState {
   isPlaying: boolean;
   playbackSpeed: PlaybackSpeed;
 
+  // Display mask (Myanmar boundary at 0.05° resolution)
+  mask: Uint8Array | null;
+  maskError: string | null;
+
   // Selected point inspector
   inspectorPoint: { lat: number; lon: number } | null;
 
@@ -37,6 +41,8 @@ interface ForecastState {
   togglePlay: () => void;
   setPlaying: (playing: boolean) => void;
   setSpeed: (s: PlaybackSpeed) => void;
+  setMask: (mask: Uint8Array) => void;
+  setMaskError: (err: string) => void;
   setInspectorPoint: (point: { lat: number; lon: number } | null) => void;
   toggleInfoPanel: () => void;
 }
@@ -54,6 +60,8 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
   isPlaying: false,
   playbackSpeed: 1,
 
+  mask: null,
+  maskError: null,
   inspectorPoint: null,
   showInfoPanel: false,
 
@@ -83,6 +91,8 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
 
   setSpeed: (s) => set({ playbackSpeed: s }),
 
+  setMask: (mask) => set({ mask, maskError: null }),
+  setMaskError: (err) => set({ maskError: err }),
   setInspectorPoint: (point) => set({ inspectorPoint: point }),
   toggleInfoPanel: () => set((s) => ({ showInfoPanel: !s.showInfoPanel })),
 }));

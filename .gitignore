@@ -21,8 +21,10 @@ build/
 *.zarr
 outputs/
 
-# Production forecast artifacts (generated offline, not committed)
-data/forecast/
+# Intermediate scratch outputs (not committed)
+# Note: data/forecast/ is tracked — it holds published artifacts for GitHub Pages
+data/forecast/*.zarr
+data/forecast/*.zarr/
 
 # Node / frontend
 node_modules/

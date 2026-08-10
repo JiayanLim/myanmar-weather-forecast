@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AI-powered 7-day weather forecast for Myanmar using Earth2Studio + Aurora 1.5"
 requires-python = ">=3.11"
 dependencies = [
-    "earth2studio>=0.17.0",
+    "earth2studio[aurora,data]>=0.17.0",
     "xarray>=2024.1.0",
     "numpy>=1.26.0",
     "scipy>=1.12.0",

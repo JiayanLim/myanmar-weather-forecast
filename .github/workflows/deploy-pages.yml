@@ -40,12 +40,20 @@ jobs:
           VITE_DATA_URL: /myanmar-weather-forecast/data
         run: npm run build
 
-      - name: Copy demo data into dist
+      - name: Copy forecast data into dist
         run: |
           mkdir -p frontend/dist/data
-          cp data/demo/forecast.json frontend/dist/data/
-          cp data/demo/temperature.bin frontend/dist/data/
-          cp data/demo/precipitation.bin frontend/dist/data/
+          if [ -f data/forecast/forecast.json ] && [ -f data/forecast/temperature.bin ] && [ -f data/forecast/precipitation.bin ]; then
+            echo "Using real forecast data from data/forecast/"
+            cp data/forecast/forecast.json frontend/dist/data/
+            cp data/forecast/temperature.bin frontend/dist/data/
+            cp data/forecast/precipitation.bin frontend/dist/data/
+          else
+            echo "No real forecast found — using demo data from data/demo/"
+            cp data/demo/forecast.json frontend/dist/data/
+            cp data/demo/temperature.bin frontend/dist/data/
+            cp data/demo/precipitation.bin frontend/dist/data/
+          fi
 
       - uses: actions/upload-pages-artifact@v3
         with:

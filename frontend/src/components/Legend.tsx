@@ -31,7 +31,7 @@ export function Legend() {
   const vmin = isTemp ? TEMP_MIN : PRECIP_MIN;
   const vmax = isTemp ? TEMP_MAX : PRECIP_MAX;
   const ticks = isTemp ? TEMP_TICKS : PRECIP_TICKS;
-  const unit = isTemp ? '°C' : 'mm/h';
+  const unit = isTemp ? '°C' : 'mm / 1h';
   const label = isTemp ? '2m Temperature' : 'Precipitation (1h accumulation)';
 
   const gradient = buildGradientStyle(lut);

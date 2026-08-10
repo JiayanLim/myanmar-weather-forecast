@@ -3,6 +3,11 @@
  * Each scale maps a normalized value [0, 1] to RGBA.
  */
 
+import {
+  DISPLAY_N_LAT, DISPLAY_N_LON, DISPLAY_STEP,
+  DISPLAY_LAT_MAX, DISPLAY_LAT_MIN, DISPLAY_LON_MIN,
+} from '../geo/mask';
+
 export interface ColorStop {
   pos: number;  // 0–1
   r: number;
@@ -50,7 +55,7 @@ export const TEMP_LUT = buildLUT([
   { pos: 1.00, r: 165, g: 0,   b: 38  }, // 40°C  dark red
 ]);
 
-// Precipitation: transparent-white -> cyan -> blue -> green -> yellow -> red (0 to 30+ mm/h)
+// Precipitation: transparent-white -> cyan -> blue -> green -> yellow -> red (0 to 30+ mm / 1-hour accumulation)
 export const PRECIP_MIN = 0;
 export const PRECIP_MAX = 30;
 export const PRECIP_LUT = buildLUT([
@@ -107,3 +112,77 @@ export function applyColorscale(
 
 export const TEMP_TICKS = [15, 20, 25, 30, 35, 40];
 export const PRECIP_TICKS = [0, 1, 3, 6, 10, 20, 30];
+
+const MODEL_STEP = 0.25;
+
+/**
+ * Render weather data at display resolution (0.05°) using bilinear interpolation
+ * from the model grid (0.25°), with optional Myanmar boundary masking.
+ *
+ * Model data layout: frame[latIdx * nLonSrc + lonIdx]
+ *   latIdx 0 = 9°N (south), latIdx nLatSrc-1 = 29°N (north)
+ *
+ * Output: RGBA Uint8ClampedArray at DISPLAY_N_LAT × DISPLAY_N_LON.
+ *   row 0 = 29°N (north top), row DISPLAY_N_LAT-1 = 9°N (south bottom)
+ */
+export function renderWithInterpolation(
+  frame: Float32Array,
+  lut: Uint8ClampedArray,
+  vmin: number,
+  vmax: number,
+  nLatSrc: number,
+  nLonSrc: number,
+  mask: Uint8Array | null,
+): Uint8ClampedArray {
+  const nLatDst = DISPLAY_N_LAT;
+  const nLonDst = DISPLAY_N_LON;
+  const rgba = new Uint8ClampedArray(nLatDst * nLonDst * 4);
+  const range = vmax - vmin;
+
+  for (let iLat = 0; iLat < nLatDst; iLat++) {
+    // Display lat decreases northward as row index increases
+    const lat = DISPLAY_LAT_MAX - iLat * DISPLAY_STEP;
+    // Fractional model lat index (model lat_i=0 = DISPLAY_LAT_MIN = 9°N)
+    const fi = (lat - DISPLAY_LAT_MIN) / MODEL_STEP;
+    const i0 = Math.max(0, Math.min(nLatSrc - 2, Math.floor(fi)));
+    const i1 = i0 + 1;
+    const ty = fi - i0;
+
+    for (let iLon = 0; iLon < nLonDst; iLon++) {
+      const pix = iLat * nLonDst + iLon;
+
+      if (mask && mask[pix] === 0) {
+        // Outside Myanmar boundary — leave transparent (rgba default = 0)
+        continue;
+      }
+
+      const lon = DISPLAY_LON_MIN + iLon * DISPLAY_STEP;
+      const fj = (lon - DISPLAY_LON_MIN) / MODEL_STEP;
+      const j0 = Math.max(0, Math.min(nLonSrc - 2, Math.floor(fj)));
+      const j1 = j0 + 1;
+      const tx = fj - j0;
+
+      // Bilinear interpolation across four model grid corners
+      const v00 = frame[i0 * nLonSrc + j0];
+      const v01 = frame[i0 * nLonSrc + j1];
+      const v10 = frame[i1 * nLonSrc + j0];
+      const v11 = frame[i1 * nLonSrc + j1];
+
+      if (isNaN(v00) || v00 <= -9000) continue;
+
+      const v = v00 * (1 - ty) * (1 - tx)
+              + v01 * (1 - ty) * tx
+              + v10 * ty * (1 - tx)
+              + v11 * ty * tx;
+
+      const norm = Math.max(0, Math.min(1, (v - vmin) / range));
+      const idx = Math.round(norm * 255);
+      rgba[pix * 4 + 0] = lut[idx * 4 + 0];
+      rgba[pix * 4 + 1] = lut[idx * 4 + 1];
+      rgba[pix * 4 + 2] = lut[idx * 4 + 2];
+      rgba[pix * 4 + 3] = lut[idx * 4 + 3];
+    }
+  }
+
+  return rgba;
+}

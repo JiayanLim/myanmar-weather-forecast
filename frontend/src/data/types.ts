@@ -10,6 +10,16 @@ export interface GridInfo {
   n_lon: number;
 }
 
+export interface TransformationProvenance {
+  variable: string;
+  unit: string;
+  accumulation_period: string;
+  source_unit: string;
+  conversion: string;
+  temporal_semantics: string;
+  pipeline: string;
+}
+
 export interface VariableMeta {
   display_name: string;
   units: string;
@@ -17,7 +27,8 @@ export interface VariableMeta {
   temporal_resolution: string;
   temporal_semantics: string;
   temporal_disclosure?: string;
-  transformation: string;
+  transformation?: string;
+  transformation_provenance?: TransformationProvenance;
   native_output?: boolean;
   file: string;
   fill_value: number;
@@ -36,6 +47,9 @@ export interface ForecastMetadata {
   forecast_horizon_hours: number;
   n_times: number;
   spatial_resolution_deg: number;
+  display_resolution_deg?: number;
+  spatial_interpolation?: string;
+  boundary_mask?: string;
   region: string;
   bbox: BBox;
   grid: GridInfo;
@@ -49,6 +63,13 @@ export interface ForecastMetadata {
   data_source_attribution: string;
   model_attribution: string;
   earth2studio_version: string;
+  inference_config?: {
+    device: string;
+    ifs_source: string;
+    patched_vars: string[];
+    inference_time_seconds: number;
+    total_pipeline_time_seconds: number;
+  };
   is_demo: boolean;
 }
 

@@ -6,6 +6,11 @@ function formatInitTime(iso: string): string {
   return d.toUTCString().replace(':00 GMT', ' UTC').replace(/\d{2}:\d{2}:\d{2}/, (m) => m.slice(0, 5));
 }
 
+function isForecastStale(generatedAtIso: string): boolean {
+  const ageMs = Date.now() - new Date(generatedAtIso).getTime();
+  return ageMs > 48 * 3_600_000;
+}
+
 export function Header() {
   const { metadata, isLoaded, isDemo, toggleInfoPanel } = useForecastStore(
     useShallow((s) => ({
@@ -33,11 +38,24 @@ export function Header() {
           <div className="flex items-center gap-3 text-[10px] text-slate-400 mt-0.5">
             <span>{metadata.model} {metadata.model_version}</span>
             <span>·</span>
-            <span>{metadata.spatial_resolution_deg}° grid</span>
+            <span title="Model resolution · Display resolution (bilinear interpolation)">
+              {metadata.spatial_resolution_deg}° model
+              {metadata.display_resolution_deg != null && (
+                <> · {metadata.display_resolution_deg}° display</>
+              )}
+            </span>
             <span>·</span>
             <span>Init: {formatInitTime(metadata.initialization_time)}</span>
             <span>·</span>
             <span>Source: {metadata.initialization_source}</span>
+            {!isDemo && isForecastStale(metadata.forecast_generated_at) && (
+              <>
+                <span>·</span>
+                <span className="text-amber-400 font-semibold" title="Forecast was generated more than 48 hours ago">
+                  ⚠ Forecast may be outdated
+                </span>
+              </>
+            )}
           </div>
         )}
       </div>
