@@ -6,6 +6,7 @@ import { DemoBanner } from './components/DemoBanner';
 import { Legend } from './components/Legend';
 import { Timeline } from './components/Timeline';
 import { InfoPanel } from './components/InfoPanel';
+import { VariableSwitcher } from './components/VariableSwitcher';
 import { useForecastStore } from './data/ForecastStore';
 import { loadForecast } from './data/ForecastLoader';
 import { buildMaskFromGeojson } from './geo/mask';
@@ -23,26 +24,24 @@ export function App() {
       isLoaded: s.isLoaded,
       error: s.error,
       maskError: s.maskError,
-      isDemo: s.metadata?.is_demo ?? true, // default true = demo until proven otherwise
+      isDemo: s.metadata?.is_demo ?? true,
     })),
   );
 
   useEffect(() => {
     setLoading(true);
     loadForecast(DATA_URL)
-      .then((d) => setData(d.metadata, d.precipitation))
+      .then((d) => setData(d.metadata, d.precipitation, d.temperature))
       .catch((err) => setError(String(err)));
   }, [setData, setError, setLoading]);
 
   useEffect(() => {
-    // BASE_URL is set by Vite from VITE_BASE_PATH (e.g. /myanmar-weather-forecast/)
     const geoUrl = `${import.meta.env.BASE_URL}geo/myanmar-boundary.geojson`;
     buildMaskFromGeojson(geoUrl)
       .then((m) => setMask(m))
       .catch((err) => {
         const msg = `Myanmar boundary unavailable: ${String(err)}`;
         setMaskError(msg);
-        // In debug mode (VITE_DEBUG=true) we log and continue; otherwise record error
         if (import.meta.env.VITE_DEBUG === 'true') {
           console.warn('[mask] Debug mode: proceeding without boundary mask.', err);
         } else {
@@ -56,10 +55,11 @@ export function App() {
       <DemoBanner />
       <Header />
 
-      {/* Map area — flex-1 so it takes all available space */}
+      {/* Map area */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Legend — floating over map, bottom-left */}
+        {/* Legend + variable switcher — floating over map, bottom-left */}
         <div className="absolute bottom-3 left-3 z-20 bg-wx-panel/90 border border-wx-border rounded p-3 min-w-[220px]">
+          <VariableSwitcher />
           {isLoaded && <Legend />}
         </div>
 
@@ -82,8 +82,6 @@ export function App() {
           </div>
         )}
 
-        {/* Mask error warning — shown for production forecasts when boundary fails to load.
-            Demo mode and debug mode allow unmasked rendering silently. */}
         {maskError && !isDemo && import.meta.env.VITE_DEBUG !== 'true' && (
           <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
             <div className="bg-amber-900/90 border border-amber-600 rounded px-3 py-1.5 text-xs text-amber-300 flex items-center gap-2 max-w-xs">

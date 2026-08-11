@@ -3,12 +3,15 @@ import type { ForecastMetadata } from './types';
 export interface ForecastData {
   metadata: ForecastMetadata;
   precipitation: Float32Array;
+  temperature: Float32Array;
 }
 
 /**
  * Load forecast artifacts from the given base URL.
- * Returns metadata + flat Float32Array for precipitation.
+ * Returns metadata + flat Float32Arrays for precipitation and temperature.
  * Layout: [n_times × n_lat × n_lon] C-order (row-major).
+ *
+ * Binary file names are taken from metadata.variables.*.file.
  */
 export async function loadForecast(baseUrl: string): Promise<ForecastData> {
   const url = (path: string) => {
@@ -20,14 +23,24 @@ export async function loadForecast(baseUrl: string): Promise<ForecastData> {
   if (!metaRes.ok) throw new Error(`Failed to load forecast.json: ${metaRes.statusText}`);
   const metadata: ForecastMetadata = await metaRes.json();
 
-  const precipBuf = await fetch(url('precipitation.bin')).then((r) => {
-    if (!r.ok) throw new Error(`Failed to load precipitation.bin: ${r.statusText}`);
-    return r.arrayBuffer();
-  });
+  const precipFile = metadata.variables.precipitation.file;
+  const tempFile = metadata.variables.temperature.file;
+
+  const [precipBuf, tempBuf] = await Promise.all([
+    fetch(url(precipFile)).then((r) => {
+      if (!r.ok) throw new Error(`Failed to load ${precipFile}: ${r.statusText}`);
+      return r.arrayBuffer();
+    }),
+    fetch(url(tempFile)).then((r) => {
+      if (!r.ok) throw new Error(`Failed to load ${tempFile}: ${r.statusText}`);
+      return r.arrayBuffer();
+    }),
+  ]);
 
   return {
     metadata,
     precipitation: new Float32Array(precipBuf),
+    temperature: new Float32Array(tempBuf),
   };
 }
 
@@ -84,7 +97,6 @@ export function nearestGridPoint(
   ) {
     return null;
   }
-  // Find nearest index
   const latIdx = Math.round((lat - lats[0]) / step);
   const lonIdx = Math.round((lon - lons[0]) / step);
   return {

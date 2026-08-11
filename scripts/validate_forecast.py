@@ -1,18 +1,20 @@
 """
 validate_forecast.py — Validate generated forecast artifacts before frontend use.
 
+Schema v3.0: GraphCastSmall 48h, temperature + precipitation, 9 frames, local M4 CPU.
+
 Checks:
-  - Required files present (forecast.json, precipitation.bin)
-  - forecast.json schema completeness (schema v2.0)
+  - Required files present (forecast.json, precipitation.bin, temperature.bin)
+  - forecast.json schema v3.0 completeness
   - Binary file dimensions match metadata [n_times × n_lat × n_lon]
-  - No NaN values
-  - tp06 >= 0 (physically impossible to have negative precipitation)
+  - No NaN values in either variable
+  - tp06 >= 0 (no negative precipitation)
   - tp06 < 500 mm/6h (extreme upper bound for tropical rainfall)
+  - t2m in plausible range [-90°C, 70°C]
   - Timestamps 6h apart and monotonically increasing
-  - Grid dimensions match Myanmar bbox at 1.0 deg
-  - n_times == 5, n_lat == 21, n_lon == 11
-  - native_timestep_hours == 6, forecast_horizon_hours == 24
-  - transformation_provenance.log_transform_applied == false
+  - Grid dimensions: n_lat == 21, n_lon == 11
+  - n_times == 9, native_timestep_hours == 6, forecast_horizon_hours == 48
+  - transformation_provenance checks for both variables
   - is_demo flag present
 
 Usage:
@@ -31,12 +33,14 @@ from pathlib import Path
 import numpy as np
 
 
-EXPECTED_N_LAT = 21    # 9N to 29N at 1.0 deg
-EXPECTED_N_LON = 11    # 92E to 102E at 1.0 deg
-EXPECTED_N_TIMES = 5   # t+0h, t+6h, t+12h, t+18h, t+24h
+EXPECTED_N_LAT      = 21     # 9N to 29N at 1.0°
+EXPECTED_N_LON      = 11     # 92E to 102E at 1.0°
+EXPECTED_N_TIMES    = 9      # t+0h through t+48h
 EXPECTED_TIMESTEP_H = 6
-EXPECTED_HORIZON_H = 24
-PRECIP_MAX_THRESHOLD = 500.0  # mm/6h — physical upper bound for tropical rainfall
+EXPECTED_HORIZON_H  = 48
+PRECIP_MAX_THRESHOLD = 500.0  # mm/6h
+TEMP_MIN_C = -90.0
+TEMP_MAX_C = 70.0
 
 
 def fail(msg: str) -> None:
@@ -60,7 +64,8 @@ def validate(data_dir: str) -> int:
 
     # --- File existence ---
     print("\n[Files]")
-    for fname in ["forecast.json", "precipitation.bin"]:
+    required_files = ["forecast.json", "precipitation.bin", "temperature.bin"]
+    for fname in required_files:
         fpath = path / fname
         if fpath.exists():
             ok(f"{fname} present ({fpath.stat().st_size:,} bytes)")
@@ -93,12 +98,11 @@ def validate(data_dir: str) -> int:
             fail(f"Missing field: {field}")
             errors += 1
 
-    # schema_version check
     sv = meta.get("schema_version", "")
-    if sv == "2.0":
-        ok(f"schema_version == '2.0'")
+    if sv == "3.0":
+        ok(f"schema_version == '3.0'")
     else:
-        fail(f"schema_version '{sv}' != '2.0'")
+        fail(f"schema_version '{sv}' != '3.0'")
         errors += 1
 
     # --- Grid dimensions ---
@@ -122,7 +126,7 @@ def validate(data_dir: str) -> int:
     # --- Timestep / horizon ---
     print("\n[Timestep & horizon]")
     timestep_h = meta.get("native_timestep_hours", -1)
-    horizon_h = meta.get("forecast_horizon_hours", -1)
+    horizon_h  = meta.get("forecast_horizon_hours", -1)
 
     if timestep_h == EXPECTED_TIMESTEP_H:
         ok(f"native_timestep_hours = {timestep_h}h")
@@ -136,7 +140,6 @@ def validate(data_dir: str) -> int:
         fail(f"forecast_horizon_hours = {horizon_h} (expected {EXPECTED_HORIZON_H})")
         errors += 1
 
-    # spatial resolution
     res = meta.get("spatial_resolution_deg", -1)
     if res == 1.0:
         ok(f"spatial_resolution_deg = {res}")
@@ -157,7 +160,6 @@ def validate(data_dir: str) -> int:
     if len(times) >= 2:
         t_parsed = [datetime.fromisoformat(t.replace("Z", "+00:00")) for t in times]
 
-        # Uniform 6h spacing
         expected_dt_s = EXPECTED_TIMESTEP_H * 3600
         bad_gaps = []
         for i in range(1, len(t_parsed)):
@@ -169,65 +171,98 @@ def validate(data_dir: str) -> int:
             ok(f"All timestamps {EXPECTED_TIMESTEP_H}h apart")
         else:
             for idx, gap_h in bad_gaps:
-                fail(f"Gap at index {idx - 1}→{idx}: {gap_h:.1f}h (expected {EXPECTED_TIMESTEP_H}h)")
+                fail(f"Gap at index {idx-1}→{idx}: {gap_h:.1f}h (expected {EXPECTED_TIMESTEP_H}h)")
                 errors += 1
 
-        # Monotonic check
         if all(t_parsed[i] > t_parsed[i - 1] for i in range(1, len(t_parsed))):
             ok("Timestamps monotonically increasing")
         else:
             fail("Timestamps not monotonically increasing")
             errors += 1
 
-    # --- Binary file ---
+    # --- precipitation.bin ---
     print("\n[precipitation.bin]")
-    arr = np.frombuffer((path / "precipitation.bin").read_bytes(), dtype="<f4")
+    arr_p = np.frombuffer((path / "precipitation.bin").read_bytes(), dtype="<f4")
     expected_size = n_times * n_lat * n_lon
     expected_bytes = expected_size * 4
 
-    if len(arr) == expected_size:
-        ok(f"Size: {len(arr)} elements = {n_times} × {n_lat} × {n_lon} ({expected_bytes} bytes)")
+    if len(arr_p) == expected_size:
+        ok(f"Size: {len(arr_p)} elements = {n_times}×{n_lat}×{n_lon} ({expected_bytes} bytes)")
     else:
-        fail(f"Size mismatch: {len(arr)} elements (expected {expected_size} = {expected_bytes} bytes)")
+        fail(f"Size mismatch: {len(arr_p)} elements (expected {expected_size})")
         errors += 1
-        # Cannot reshape — bail early
         print("\n" + "=" * 60)
         print(f"VALIDATION FAILED — {errors} error(s) in {path}")
         print("=" * 60)
         return errors
 
-    data = arr.reshape(n_times, n_lat, n_lon)
-
-    # NaN check
-    nan_count = int(np.sum(np.isnan(data)))
+    data_p = arr_p.reshape(n_times, n_lat, n_lon)
+    nan_count = int(np.sum(np.isnan(data_p)))
     if nan_count == 0:
         ok("No NaN values")
     else:
-        fail(f"{nan_count} NaN values detected")
+        fail(f"{nan_count} NaN values")
         errors += 1
 
-    # Range checks
-    vmin, vmax = float(np.nanmin(data)), float(np.nanmax(data))
-    info(f"Value range: [{vmin:.3f}, {vmax:.3f}] mm/6h")
+    vmin_p = float(np.nanmin(data_p))
+    vmax_p = float(np.nanmax(data_p))
+    info(f"Value range: [{vmin_p:.3f}, {vmax_p:.3f}] mm/6h")
 
-    if vmin >= 0:
-        ok(f"tp06 >= 0 (min = {vmin:.4f} mm/6h)")
+    if vmin_p >= 0:
+        ok(f"tp06 >= 0 (min = {vmin_p:.4f} mm/6h)")
     else:
-        fail(f"Negative precipitation detected: min = {vmin:.4f} mm/6h")
+        fail(f"Negative precipitation: min = {vmin_p:.4f} mm/6h")
         errors += 1
 
-    if vmax < PRECIP_MAX_THRESHOLD:
-        ok(f"tp06 max = {vmax:.2f} mm/6h (< {PRECIP_MAX_THRESHOLD:.0f} threshold)")
+    if vmax_p < PRECIP_MAX_THRESHOLD:
+        ok(f"tp06 max = {vmax_p:.2f} mm/6h (< {PRECIP_MAX_THRESHOLD:.0f} threshold)")
     else:
-        fail(f"tp06 max = {vmax:.1f} mm/6h exceeds threshold {PRECIP_MAX_THRESHOLD:.0f}")
+        fail(f"tp06 max = {vmax_p:.1f} mm/6h exceeds threshold {PRECIP_MAX_THRESHOLD:.0f}")
         errors += 1
 
-    # t+0h frame (should be 0 for both demo and production init frame)
-    t0_max = float(np.nanmax(np.abs(data[0])))
-    info(f"t+0h frame: max abs = {t0_max:.4f} mm/6h (expected 0.0 for init frame)")
+    t0_max_p = float(np.nanmax(np.abs(data_p[0])))
+    info(f"t+0h frame: max abs = {t0_max_p:.4f} mm/6h (expected 0.0 for init frame)")
+
+    # --- temperature.bin ---
+    print("\n[temperature.bin]")
+    arr_t = np.frombuffer((path / "temperature.bin").read_bytes(), dtype="<f4")
+
+    if len(arr_t) == expected_size:
+        ok(f"Size: {len(arr_t)} elements = {n_times}×{n_lat}×{n_lon} ({expected_bytes} bytes)")
+    else:
+        fail(f"Size mismatch: {len(arr_t)} elements (expected {expected_size})")
+        errors += 1
+        print("\n" + "=" * 60)
+        print(f"VALIDATION FAILED — {errors} error(s) in {path}")
+        print("=" * 60)
+        return errors
+
+    data_t = arr_t.reshape(n_times, n_lat, n_lon)
+    nan_count_t = int(np.sum(np.isnan(data_t)))
+    if nan_count_t == 0:
+        ok("No NaN values")
+    else:
+        fail(f"{nan_count_t} NaN values")
+        errors += 1
+
+    vmin_t = float(np.nanmin(data_t))
+    vmax_t = float(np.nanmax(data_t))
+    info(f"Value range: [{vmin_t:.2f}, {vmax_t:.2f}] °C")
+
+    if vmin_t >= TEMP_MIN_C:
+        ok(f"t2m min = {vmin_t:.2f}°C >= {TEMP_MIN_C}°C lower bound")
+    else:
+        fail(f"t2m min = {vmin_t:.2f}°C < {TEMP_MIN_C}°C lower bound")
+        errors += 1
+
+    if vmax_t <= TEMP_MAX_C:
+        ok(f"t2m max = {vmax_t:.2f}°C <= {TEMP_MAX_C}°C upper bound")
+    else:
+        fail(f"t2m max = {vmax_t:.2f}°C > {TEMP_MAX_C}°C upper bound")
+        errors += 1
 
     # --- Variable metadata ---
-    print("\n[Variable metadata]")
+    print("\n[Variable metadata — precipitation]")
     variables = meta.get("variables", {})
 
     if "precipitation" not in variables:
@@ -248,7 +283,6 @@ def validate(data_dir: str) -> int:
                 fail(f"precipitation.{field} MISSING")
                 errors += 1
 
-        # units check
         units = vmeta.get("units", "")
         if "6" in units and ("mm" in units.lower() or "millim" in units.lower()):
             ok(f"units = '{units}' (contains '6' and 'mm')")
@@ -256,28 +290,66 @@ def validate(data_dir: str) -> int:
             fail(f"units = '{units}' does not match mm/6h contract")
             errors += 1
 
-        # transformation_provenance checks
         prov = vmeta.get("transformation_provenance", {})
         if prov.get("log_transform_applied") is False:
             ok("log_transform_applied = false")
         else:
-            fail(f"log_transform_applied = {prov.get('log_transform_applied')} (must be false for tp06)")
+            fail(f"log_transform_applied = {prov.get('log_transform_applied')} (must be false)")
             errors += 1
 
         if prov.get("exp_transform_applied") is False:
             ok("exp_transform_applied = false")
         else:
-            fail(f"exp_transform_applied = {prov.get('exp_transform_applied')} (must be false for tp06)")
+            fail(f"exp_transform_applied = {prov.get('exp_transform_applied')} (must be false)")
             errors += 1
 
         src_var = prov.get("source_variable", "")
         if src_var == "tp06":
-            ok(f"source_variable = '{src_var}'")
+            ok(f"source_variable = 'tp06'")
         else:
             fail(f"source_variable = '{src_var}' (expected 'tp06')")
             errors += 1
 
-    # is_demo check
+    print("\n[Variable metadata — temperature]")
+    if "temperature" not in variables:
+        fail("Missing 'temperature' variable metadata")
+        errors += 1
+    else:
+        tmeta = variables["temperature"]
+        required_temp_fields = [
+            "display_name", "units", "source_variable",
+            "temporal_resolution", "temporal_semantics",
+            "transformation_provenance", "native_output", "file", "fill_value",
+        ]
+        for field in required_temp_fields:
+            if field in tmeta:
+                ok(f"temperature.{field}: {str(tmeta[field])[:60]}")
+            else:
+                fail(f"temperature.{field} MISSING")
+                errors += 1
+
+        t_units = tmeta.get("units", "")
+        if "°C" in t_units or "C" in t_units:
+            ok(f"units = '{t_units}' (°C)")
+        else:
+            fail(f"units = '{t_units}' does not indicate °C")
+            errors += 1
+
+        t_src = tmeta.get("source_variable", "")
+        if t_src == "t2m":
+            ok(f"source_variable = 't2m'")
+        else:
+            fail(f"source_variable = '{t_src}' (expected 't2m')")
+            errors += 1
+
+        t_prov = tmeta.get("transformation_provenance", {})
+        if t_prov.get("log_transform_applied") is False:
+            ok("log_transform_applied = false")
+        else:
+            fail(f"log_transform_applied = {t_prov.get('log_transform_applied')} (must be false)")
+            errors += 1
+
+    # --- is_demo flag ---
     print("\n[Demo flag]")
     is_demo = meta.get("is_demo")
     if isinstance(is_demo, bool):
@@ -297,7 +369,9 @@ def validate(data_dir: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate GraphCastSmall forecast artifacts (schema v2.0)")
+    parser = argparse.ArgumentParser(
+        description="Validate GraphCastSmall forecast artifacts (schema v3.0)"
+    )
     parser.add_argument("--data-dir", required=True, help="Path to forecast artifact directory")
     args = parser.parse_args()
     return min(validate(args.data_dir), 1)

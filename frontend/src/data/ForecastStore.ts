@@ -1,16 +1,18 @@
 import { create } from 'zustand';
-import type { ForecastMetadata, PlaybackSpeed } from './types';
+import type { ActiveVariable, ForecastMetadata, PlaybackSpeed } from './types';
 
 interface ForecastState {
   // Data
   metadata: ForecastMetadata | null;
   precipitation: Float32Array | null;
+  temperature: Float32Array | null;
   isLoaded: boolean;
   isLoading: boolean;
   error: string | null;
 
   // UI state
-  currentHour: number; // frame index 0–(n_times-1)
+  currentHour: number;         // frame index 0–(n_times-1)
+  activeVariable: ActiveVariable;
   isPlaying: boolean;
   playbackSpeed: PlaybackSpeed;
 
@@ -25,12 +27,13 @@ interface ForecastState {
   showInfoPanel: boolean;
 
   // Actions
-  setData: (metadata: ForecastMetadata, precipitation: Float32Array) => void;
+  setData: (metadata: ForecastMetadata, precipitation: Float32Array, temperature: Float32Array) => void;
   setError: (error: string) => void;
   setLoading: (loading: boolean) => void;
   setHour: (hour: number) => void;
   stepForward: () => void;
   stepBackward: () => void;
+  setVariable: (v: ActiveVariable) => void;
   togglePlay: () => void;
   setPlaying: (playing: boolean) => void;
   setSpeed: (s: PlaybackSpeed) => void;
@@ -43,11 +46,13 @@ interface ForecastState {
 export const useForecastStore = create<ForecastState>((set, get) => ({
   metadata: null,
   precipitation: null,
+  temperature: null,
   isLoaded: false,
   isLoading: false,
   error: null,
 
   currentHour: 0,
+  activeVariable: 'precipitation',
   isPlaying: false,
   playbackSpeed: 1,
 
@@ -56,20 +61,20 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
   inspectorPoint: null,
   showInfoPanel: false,
 
-  setData: (metadata, precipitation) =>
-    set({ metadata, precipitation, isLoaded: true, isLoading: false, error: null }),
+  setData: (metadata, precipitation, temperature) =>
+    set({ metadata, precipitation, temperature, isLoaded: true, isLoading: false, error: null }),
 
   setError: (error) => set({ error, isLoading: false }),
   setLoading: (loading) => set({ isLoading: loading }),
 
   setHour: (hour) => {
-    const max = (useForecastStore.getState().metadata?.n_times ?? 5) - 1;
+    const max = (useForecastStore.getState().metadata?.n_times ?? 9) - 1;
     set({ currentHour: Math.max(0, Math.min(max, hour)) });
   },
 
   stepForward: () => {
     const { currentHour, metadata } = get();
-    const maxHour = (metadata?.n_times ?? 5) - 1;
+    const maxHour = (metadata?.n_times ?? 9) - 1;
     set({ currentHour: Math.min(currentHour + 1, maxHour) });
   },
 
@@ -77,6 +82,8 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
     const { currentHour } = get();
     set({ currentHour: Math.max(currentHour - 1, 0) });
   },
+
+  setVariable: (v) => set({ activeVariable: v }),
 
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (playing) => set({ isPlaying: playing }),

@@ -2,21 +2,26 @@
 Sync Impact Report
 ==================
 Version change: 1.0.1 → 2.0.0 (MAJOR — model architecture replacement)
-Changed sections:
   - §II: Aurora1p5 replaced by GraphCast Small. ARCO/IFS as init sources.
-    sic-patch constraint removed (GraphCastSmall does not require sic).
-    tp1h/log-untransform constraint replaced by tp06/no-transform.
-  - §III: Removed sic gap requirement and log untransform.
-    Updated artifact dimensions to GraphCastSmall (1° grid, 6h steps, 24h).
-  - §VI: Updated to native 6h timestep navigation across 24h horizon.
-    Hourly navigation requirement relaxed to match model's native step.
-  - §IX: Updated precipitation disclosure to tp06 (6h accumulation).
-  - Architecture Constraints: GraphCastSmall, JAX backend noted.
-  - Data & Model Integrity: Updated validation rules for tp06.
-  - New §XI: Hardware Transparency — VRAM must be experimentally verified.
+    sic-patch constraint removed. tp1h/log-untransform → tp06/no-transform.
+  - §III: 1° grid, 6h steps, 24h horizon (5 frames).
+  - §VI: Native 6h timestep navigation across 24h horizon.
+  - §IX: Precipitation disclosure for tp06 (6h accumulation).
+  - New §XI: Hardware Transparency — VRAM experimentally verified.
   - New §XII: Resolution Honesty — interpolation cannot add model information.
 Removed: Aurora1p5, IFS sic gap, log untransform, 168h horizon, hourly slider
 Reason: Aurora1p5 exceeded T4 VRAM (16 GB). GraphCast Small selected as replacement.
+Approved: User decision on 2026-08-11
+
+Version change: 2.0.0 → 2.1.0 (MINOR — 48h + temperature + M4 CPU)
+  - §III: 24h → 48h horizon; 5 → 9 frames; added t2m/temperature variable.
+  - §VI: 24h → 48h horizon; slider covers 0–48h.
+  - §VIII: Payload ~16.6 KB (two binaries, 9 frames each).
+  - §XI: M4 CPU validated (not T4 GPU); hardware metric is RSS not VRAM.
+  - Architecture Constraints: JAX CPU (XLA ARM64) noted as validated path.
+  - ADR-011: 24h → 48h horizon extension with temperature addition.
+Reason: Full 48h inference fits on M4 CPU in ~78s. Temperature (t2m) is a
+  native GraphCastSmall output with no additional inference cost.
 Approved: User decision on 2026-08-11
 -->
 
@@ -67,9 +72,10 @@ inference or call any live weather API at runtime.
 
 The pipeline MUST produce artifacts that are:
 - Spatially subset to the Myanmar bounding box (92°E–102°E, 9°N–29°N)
-- Temporally structured as **6-hour steps** across a **24-hour horizon**
-  (4 forecast steps: t+6h, t+12h, t+18h, t+24h, plus t+0h init = 5 frames)
-- Encoded in a browser-efficient format (float32 binary, documented per release)
+- Temporally structured as **6-hour steps** across a **48-hour horizon**
+  (8 forecast steps: t+6h through t+48h, plus t+0h init = 9 frames)
+- Variables: **tp06** (precipitation, mm/6h) and **t2m** (temperature, °C)
+- Encoded in a browser-efficient format (float32 binary per variable, documented per release)
 
 **Initialization requirement**: GraphCastSmall requires two consecutive time
 steps as input: t−6h and t+0h. Both must be fetched from the initialization
@@ -97,8 +103,8 @@ click-to-inspect interactions.
 ### VI. Native-Step Navigation
 
 Users MUST be able to navigate the forecast step-by-step across the full
-24-hour horizon. The timeline control MUST provide:
-- Slider scrubber across all available forecast steps (0, 6, 12, 18, 24h)
+48-hour horizon. The timeline control MUST provide:
+- Slider scrubber across all available forecast steps (0, 6, 12, ..., 48h)
 - Previous / Next step buttons
 - Play / Pause animation
 - Displayed forecast date, UTC time, and lead time offset
@@ -134,7 +140,7 @@ source code.
   broadband connection (≥25 Mbps), measured from cold cache.
 - Step-to-step frame transitions MUST feel near-instantaneous (<200 ms)
   after forecast data is loaded.
-- The total forecast payload (5 frames × 21 × 11 × 4 bytes) is ~4.6 KB —
+- The total forecast payload (2 variables × 9 frames × 21 × 11 × 4 bytes) is ~16.6 KB —
   no lazy loading is required at this scale.
 
 ### IX. Climate-Honest
@@ -167,21 +173,28 @@ The architecture is: pipeline scripts → static files → GitHub Pages.
 
 ### XI. Hardware Transparency (NEW)
 
-The production pipeline MUST explicitly record the GPU hardware used
-for inference and the measured peak VRAM consumption. The Colab notebook
-MUST report GPU type, total VRAM, and peak allocated VRAM after each
-inference run.
+The production pipeline MUST explicitly record the inference hardware used
+and the measured peak memory consumption. These MUST appear in `forecast.json`
+under `inference_config`.
 
-**VRAM requirements MUST be established experimentally**, not assumed from
-documentation badges. The GraphCastSmall badge states "Rec VRAM: 40 GB".
-Whether it runs on a 16 GB T4 MUST be verified through a staged test:
-1. GPU memory baseline
-2. Single-step inference memory test
-3. Full 24h forecast
+**Hardware requirements MUST be established experimentally**, not assumed from
+documentation badges.
 
-If a single inference step exceeds available VRAM, this MUST be reported
-immediately. No further VRAM-reduction hacks MUST be attempted without
-explicit user approval.
+**Validated configuration (2026-08-11)**:
+- Hardware: Apple M4 CPU, 24 GB unified memory
+- Backend: JAX CPU / XLA ARM64 (`JAX_PLATFORM_NAME=cpu`)
+- Peak RSS: ~2.34 GB for the full 48h pipeline
+- Runtime: ~78s end-to-end (~54s inference + model load)
+- MPS (Metal) is NOT compatible — JAX requires float64 ops not available on MPS
+
+**GPU path**: A CUDA GPU accelerates inference. If GPU inference is used,
+peak VRAM MUST be measured and recorded. The GraphCastSmall badge states
+"Rec VRAM: 40 GB"; actual requirements MUST be verified with a single-step
+smoke test before running the full forecast.
+
+If any hardware test fails (OOM, crash, assertion error), this MUST be
+reported immediately. No workarounds MUST be attempted without explicit
+user approval.
 
 ### XII. Resolution Honesty (NEW)
 
@@ -206,8 +219,8 @@ beyond the native 1.0° model grid.
 - **Forecast format**: Float32 binary arrays per variable; metadata in JSON
 - **Python pipeline**: Earth2Studio ≥ 0.17.0, uv-managed virtual environment
 - **GraphCastSmall backend**: JAX + Haiku (DeepMind) wrapped by Earth2Studio;
-  runs on CUDA GPU via JAX's GPU backend; uses bfloat16 internally
-- **GitHub Actions**: Used for frontend deployment ONLY; NOT for GPU inference
+  validated on Apple M4 CPU (JAX XLA ARM64); CUDA GPU also supported; bfloat16 internal
+- **GitHub Actions**: Used for frontend deployment ONLY; NOT for inference
 - **Model interface**: No model-specific strings in frontend TypeScript
 
 ## Data & Model Integrity
@@ -249,8 +262,23 @@ were applied but insufficient for Aurora1p5's attention mechanism.
 **Constraints accepted**:
 - 1.0° resolution (coarser than Aurora1p5's 0.25°)
 - 6h native timestep (not hourly)
-- 24h forecast horizon (vs. 48h)
 - tp06 (6h accumulated) rather than tp1h (1h accumulated)
+
+### ADR-011: 24h → 48h Horizon + Temperature (2026-08-11)
+
+**Decision**: Extend forecast horizon from 24h to 48h and add temperature display.
+
+**Reason**: GraphCastSmall on M4 CPU runs 8 AR steps in ~54s (< 80s total), making
+48h practical with no meaningful cost increase. `t2m` (2m temperature) is a native
+GraphCastSmall output processed in the same inference pass — zero additional inference cost.
+
+**Changes**:
+- `GC_N_STEPS`: 4 → 8
+- `GC_N_FRAMES`: 5 → 9
+- `GC_HORIZON_HOURS`: 24 → 48
+- Added `t2m` → °C (K − 273.15) extraction and `temperature.bin` artifact
+- Schema bumped: v2.0 → v3.0
+- Frontend: variable switcher (Precip/Temp), temperature color scale
 
 ## Governance
 
@@ -264,4 +292,4 @@ Any amendment requires:
 All feature specifications (spec.md) and implementation plans (plan.md) MUST
 include a Constitution Check section verifying compliance with each principle.
 
-**Version**: 2.0.0 | **Ratified**: 2026-08-09 | **Last Amended**: 2026-08-11
+**Version**: 2.1.0 | **Ratified**: 2026-08-09 | **Last Amended**: 2026-08-11

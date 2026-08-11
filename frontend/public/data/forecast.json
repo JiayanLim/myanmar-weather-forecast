@@ -1,15 +1,15 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "model": "GraphCastSmall",
   "model_version": "1.0",
   "model_checkpoint": "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
   "model_source": "gs://dm_graphcast/graphcast",
   "initialization_source": "DEMO",
   "initialization_time": "2026-08-09T00:00:00Z",
-  "forecast_generated_at": "2026-08-11T02:17:29Z",
-  "forecast_horizon_hours": 24,
+  "forecast_generated_at": "2026-08-11T13:03:14Z",
+  "forecast_horizon_hours": 48,
   "native_timestep_hours": 6,
-  "n_times": 5,
+  "n_times": 9,
   "spatial_resolution_deg": 1.0,
   "display_resolution_deg": null,
   "region": "Myanmar",
@@ -64,7 +64,11 @@
     "2026-08-09T06:00:00Z",
     "2026-08-09T12:00:00Z",
     "2026-08-09T18:00:00Z",
-    "2026-08-10T00:00:00Z"
+    "2026-08-10T00:00:00Z",
+    "2026-08-10T06:00:00Z",
+    "2026-08-10T12:00:00Z",
+    "2026-08-10T18:00:00Z",
+    "2026-08-11T00:00:00Z"
   ],
   "variables": {
     "precipitation": {
@@ -82,16 +86,44 @@
         "accumulation_period_hours": 6,
         "log_transform_applied": false,
         "exp_transform_applied": false,
-        "pipeline": "DEMO synthetic data: mm/6h values generated directly. Production: GraphCastSmall native tp06 (physical metres) \u2192 metres \u00d7 1000 \u2192 mm/6h."
+        "pipeline": "DEMO synthetic data: mm/6h values generated directly. Production: GraphCastSmall native tp06 \u2192 metres \u00d7 1000 \u2192 mm/6h."
       },
-      "t0_note": "t+0h frame (index 0) is synthetic: precipitation set to 0.0. It represents the analysis state; no forecast accumulation has occurred.",
+      "t0_note": "t+0h frame (index 0) is synthetic: precipitation set to 0.0. Represents the analysis state; no forecast accumulation at init hour.",
       "native_output": true,
       "file": "precipitation.bin",
+      "fill_value": null
+    },
+    "temperature": {
+      "display_name": "Temperature",
+      "units": "\u00b0C",
+      "source_variable": "t2m",
+      "temporal_resolution": "6-hourly",
+      "temporal_semantics": "2m temperature at the forecast valid time.",
+      "transformation_provenance": {
+        "source_variable": "t2m",
+        "source_unit": "K",
+        "conversion": "K - 273.15",
+        "output_unit": "\u00b0C",
+        "log_transform_applied": false,
+        "exp_transform_applied": false,
+        "pipeline": "DEMO synthetic data: \u00b0C values generated directly."
+      },
+      "t0_note": "t+0h frame (index 0) is the synthetic analysis temperature.",
+      "native_output": true,
+      "file": "temperature.bin",
       "fill_value": null
     }
   },
   "data_source_attribution": "DEMO DATA \u2014 synthetic, not a real GraphCastSmall forecast",
   "model_attribution": "GraphCast by DeepMind/Google (schema only; model not executed in demo). Earth2Studio wrapper by NVIDIA.",
   "earth2studio_version": ">=0.17.0",
+  "inference_config": {
+    "device": "DEMO (no inference)",
+    "jax_backend": null,
+    "rss_peak_gb": null,
+    "model_load_time_seconds": null,
+    "inference_time_seconds": null,
+    "total_pipeline_time_seconds": null
+  },
   "is_demo": true
 }

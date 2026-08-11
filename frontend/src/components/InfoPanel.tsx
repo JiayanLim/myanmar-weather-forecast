@@ -68,16 +68,34 @@ export function InfoPanel() {
             <hr className="border-wx-border" />
 
             <div className="flex flex-col gap-2">
-              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Variable</h3>
-              <div className="flex flex-col gap-2 text-sm">
+              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Variables</h3>
+              <div className="flex flex-col gap-3 text-sm">
                 <div>
-                  <span className="text-white font-medium">Precipitation</span>
-                  <p className="text-slate-400 text-xs mt-0.5">{metadata.variables.precipitation.temporal_semantics}</p>
+                  <span className="text-white font-medium">
+                    Temperature · {metadata.variables.temperature.units}
+                  </span>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    {metadata.variables.temperature.temporal_semantics}
+                  </p>
+                  <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
+                    {metadata.variables.temperature.transformation_provenance?.pipeline}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-white font-medium">
+                    Precipitation · {metadata.variables.precipitation.units}
+                  </span>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    {metadata.variables.precipitation.temporal_semantics}
+                  </p>
                   {metadata.variables.precipitation.temporal_disclosure && (
                     <p className="text-amber-400/80 text-[10px] mt-1 italic">
                       {metadata.variables.precipitation.temporal_disclosure}
                     </p>
                   )}
+                  <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
+                    {metadata.variables.precipitation.transformation_provenance?.pipeline}
+                  </p>
                 </div>
               </div>
             </div>
@@ -96,7 +114,7 @@ export function InfoPanel() {
               <ul className="text-[11px] text-slate-400 list-disc list-inside space-y-1">
                 <li>The {metadata.spatial_resolution_deg}° model grid (~111 km) represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
                 <li>The display uses bilinear interpolation to 0.05° for visual clarity. This does not add forecast information beyond the native {metadata.spatial_resolution_deg}° model resolution.</li>
-                <li>Forecast skill degrades within the 24-hour window for rapidly evolving convective systems.</li>
+                <li>Forecast skill degrades over the {metadata.forecast_horizon_hours}-hour window, particularly for rapidly evolving convective systems.</li>
                 <li>Precipitation represents total accumulation during the indicated 6-hour forecast period, not an instantaneous rainfall rate.</li>
                 {metadata.is_demo && (
                   <li className="text-amber-400">This is <strong>synthetic demo data</strong> — not a real weather forecast. Do not use for any decision-making.</li>

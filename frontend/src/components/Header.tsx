@@ -6,9 +6,9 @@ function formatInitTime(iso: string): string {
   return d.toUTCString().replace(':00 GMT', ' UTC').replace(/\d{2}:\d{2}:\d{2}/, (m) => m.slice(0, 5));
 }
 
-function isForecastStale(generatedAtIso: string): boolean {
+function isForecastStale(generatedAtIso: string, horizonHours: number): boolean {
   const ageMs = Date.now() - new Date(generatedAtIso).getTime();
-  return ageMs > 48 * 3_600_000; // stale after 48h (forecast horizon is 24h)
+  return ageMs > horizonHours * 3_600_000;
 }
 
 export function Header() {
@@ -26,7 +26,7 @@ export function Header() {
       <div className="flex flex-col">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold tracking-widest text-white uppercase">
-            Myanmar 24h Precipitation
+            Myanmar 48h Weather Forecast
           </span>
           {isDemo && (
             <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-500 text-black">
@@ -48,10 +48,10 @@ export function Header() {
             <span>Init: {formatInitTime(metadata.initialization_time)}</span>
             <span>·</span>
             <span>Source: {metadata.initialization_source}</span>
-            {!isDemo && isForecastStale(metadata.forecast_generated_at) && (
+            {!isDemo && isForecastStale(metadata.forecast_generated_at, metadata.forecast_horizon_hours) && (
               <>
                 <span>·</span>
-                <span className="text-amber-400 font-semibold" title="Forecast was generated more than 48 hours ago">
+                <span className="text-amber-400 font-semibold" title={`Forecast was generated more than ${metadata.forecast_horizon_hours} hours ago`}>
                   ⚠ Forecast may be outdated
                 </span>
               </>

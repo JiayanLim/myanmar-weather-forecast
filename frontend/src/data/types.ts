@@ -15,7 +15,7 @@ export interface TransformationProvenance {
   source_unit: string;
   conversion: string;
   output_unit: string;
-  accumulation_period_hours: number;
+  accumulation_period_hours?: number;  // only present for precipitation
   log_transform_applied: boolean;
   exp_transform_applied: boolean;
   pipeline: string;
@@ -57,16 +57,19 @@ export interface ForecastMetadata {
   times_utc: string[];
   variables: {
     precipitation: VariableMeta;
+    temperature: VariableMeta;
   };
   data_source_attribution: string;
   model_attribution: string;
   earth2studio_version: string;
   inference_config?: {
     device: string;
-    peak_vram_gb: number | null;
+    jax_backend?: string | null;
+    rss_peak_gb?: number | null;
     [key: string]: unknown;
   };
   is_demo: boolean;
 }
 
+export type ActiveVariable = 'precipitation' | 'temperature';
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4;

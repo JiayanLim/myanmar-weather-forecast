@@ -1,18 +1,31 @@
 [project]
 name = "myanmar-weather-forecast"
 version = "0.1.0"
-description = "AI-powered 7-day weather forecast for Myanmar using Earth2Studio + Aurora 1.5"
+description = "AI-powered 48h weather forecast for Myanmar using Earth2Studio + GraphCastSmall"
 requires-python = ">=3.11"
 dependencies = [
     "earth2studio[aurora,data]>=0.17.0",
-    "xarray>=2024.1.0",
+    "xarray>=2024.1.0,<2026",
     "numpy>=1.26.0",
     "scipy>=1.12.0",
     "zarr>=2.17.0",
     "netcdf4>=1.6.0",
     "cfgrib>=0.9.10",
     "eccodes>=1.7.0",
+    "psutil>=5.9.0",
+    # GraphCastSmall model deps — declared explicitly to avoid earth2studio[graphcast]'s
+    # jax[cuda13] requirement which fails on macOS. graphcast git source overrides PyPI.
+    "graphcast",
+    "dm-haiku>=0.0.14",
+    "dm-tree>=0.1.9",
+    "flax>=0.10.6",
 ]
+
+[tool.uv.sources]
+# Use google-deepmind/graphcast v0.2 (commit 08cf736, 2026-03-30).
+# PyPI "graphcast" is an unrelated package; HEAD was renamed to "weathernext".
+# v0.2 is the last tag where: setup.py name="graphcast", all submodules intact.
+graphcast = { git = "https://github.com/google-deepmind/graphcast", rev = "08cf736" }
 
 [project.optional-dependencies]
 dev = [
