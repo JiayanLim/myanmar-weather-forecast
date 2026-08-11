@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useForecastStore } from '../data/ForecastStore';
 import type { ActiveVariable } from '../data/types';
 
@@ -7,11 +8,13 @@ const LABELS: Record<ActiveVariable, string> = {
 };
 
 export function VariableSwitcher() {
-  const { activeVariable, setVariable, isLoaded } = useForecastStore((s) => ({
-    activeVariable: s.activeVariable,
-    setVariable: s.setVariable,
-    isLoaded: s.isLoaded,
-  }));
+  const { activeVariable, setVariable, isLoaded } = useForecastStore(
+    useShallow((s) => ({
+      activeVariable: s.activeVariable,
+      setVariable: s.setVariable,
+      isLoaded: s.isLoaded,
+    })),
+  );
 
   if (!isLoaded) return null;
 
