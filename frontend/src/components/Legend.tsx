@@ -25,13 +25,13 @@ export function Legend() {
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-slate-400">Precipitation (1h accumulation)</span>
+        <span className="text-[10px] text-slate-400">Precipitation (6h accumulation)</span>
         <div className="relative group">
           <span className="text-[10px] text-slate-500 cursor-help border-b border-dashed border-slate-500">
             ⓘ accumulation
           </span>
           <div className="absolute bottom-5 right-0 hidden group-hover:block bg-wx-panel border border-wx-border rounded p-2 text-[10px] text-slate-300 w-52 z-50 shadow-lg">
-            Precipitation values represent total rainfall accumulated during each 1-hour forecast period.
+            Precipitation values represent total rainfall accumulated during each 6-hour forecast period.
             These are <strong>not</strong> instantaneous rainfall rates.
           </div>
         </div>
@@ -48,8 +48,8 @@ export function Legend() {
         ))}
       </div>
       <div className="flex justify-between text-[9px] text-slate-500 mt-3">
-        <span>{PRECIP_MIN} mm / 1h</span>
-        <span>{PRECIP_MAX}+ mm / 1h</span>
+        <span>{PRECIP_MIN} mm / 6h</span>
+        <span>{PRECIP_MAX}+ mm / 6h</span>
       </div>
     </div>
   );

@@ -1,228 +1,260 @@
 # Tasks: Myanmar Weather Forecast Web Application
 
-**Input**: `specs/001-myanmar-weather-app/` (spec.md v2, plan.md v2, research.md v2)
+**Input**: `specs/001-myanmar-weather-app/` (spec.md v3, plan.md v3, research.md v3)
 **Feature**: 001-myanmar-weather-app
-**Revised**: 2026-08-09
+**Revised**: 2026-08-11 (GraphCastSmall migration — replaces Aurora1p5 task set)
 
 **Key architectural facts for task authors**:
-- Aurora1p5 natively produces hourly t2m AND tp1h — no PrecipitationAFNO, no interpolation
-- IFS is the required init source; GFS is prohibited
-- sic gap in IFS open data must be patched (see plan.md IFSSource)
-- tp1h requires log untransform: `exp(raw) * 1000` → mm/h
-- Binary format: [169 × 81 × 41] float32 per variable (~2.1 MB each)
+- GraphCastSmall natively produces tp06 (6h accumulated precipitation) — no PrecipitationAFNO
+- ARCO (dev) or IFS (prod) are the only verified init sources; NCAR_ERA5 and GFS are out
+- GraphCastSmall requires t-6h AND t+0h at initialization — two timesteps must be fetched
+- tp06 requires NO log/exp transform — only metres × 1000 → mm / 6h
+- Binary format: [5 × 21 × 11] float32 per variable (~4.6 KB)
+- Timeline: 5 steps at 0, 6, 12, 18, 24h
+- Myanmar at 1.0°: lat 9–29°N (21 pts), lon 92–102°E (11 pts)
+- No temperature, no variable switcher
+- VRAM must be tested experimentally; 40 GB is the badge but T4 (16 GB) is unverified
 
 ---
 
-## Phase 1: Setup — Project Scaffold
+## Phase 1: Spec Kit Update
 
-**Purpose**: Create all directories, configs, and dependency files before any code.
+**Status**: COMPLETE (2026-08-11)
 
-- [ ] T001 Create directory structure: `frontend/src/{components,map,data}/`, `forecast/{models,sources,postprocessing}/`, `scripts/`, `data/{demo,forecast}/`, `docs/`, `tests/`
-- [ ] T002 Create `pyproject.toml` with uv config: `earth2studio>=0.17.0`, `xarray`, `numpy`, `scipy`, `zarr`, `ruff`, `pytest`, `cfgrib` dependencies
-- [ ] T003 [P] Create `frontend/package.json`: react@18, typescript@5, vite@5, maplibre-gl@4, tailwindcss@3, zustand, vitest, @vitejs/plugin-react
-- [ ] T004 [P] Create `frontend/vite.config.ts`: base path from `VITE_BASE_PATH` env var; react plugin
-- [ ] T005 [P] Create `frontend/tailwind.config.ts` and `frontend/src/index.css` with Tailwind directives
-- [ ] T006 [P] Create `frontend/tsconfig.json`: strict mode, no implicit any, ES2022 target
-- [ ] T007 [P] Create `.gitignore`: `data/forecast/`, `**/__pycache__/`, `node_modules/`, `.env`, `*.zarr/`, `dist/`, `.venv/`, `*.ckpt`, `*.pickle`
-- [ ] T008 Create `frontend/index.html` with correct base href and React root div
-- [ ] T009 Create `frontend/src/main.tsx`: React 18 root render
-
-**Checkpoint**: `uv sync` succeeds. `npm install` in `frontend/` succeeds. Directory tree matches plan.md.
+- [x] T001 Update `.specify/memory/constitution.md` v1.0.1 → v2.0.0 (GraphCastSmall, 6h steps, tp06)
+- [x] T002 Update `specs/001-myanmar-weather-app/research.md` with GraphCastSmall ADRs
+- [x] T003 Update `specs/001-myanmar-weather-app/spec.md` for 24h/6h-step/1°/21×11/tp06-only
+- [x] T004 Update `specs/001-myanmar-weather-app/plan.md` with new implementation phases
+- [x] T005 Update `specs/001-myanmar-weather-app/tasks.md` (this file)
 
 ---
 
-## Phase 2: Foundational — Data Contract + Demo Data
+## Phase 2: Pipeline Rewrite
 
-**Purpose**: Lock the binary artifact format and produce committed demo data that all frontend phases depend on.
+**Status**: COMPLETE (2026-08-11)
 
-**⚠️ CRITICAL GATE**: Frontend development cannot start until `data/demo/` artifacts are committed.
+**Goal**: Rewrite `scripts/generate_forecast.py` for GraphCastSmall + ARCO/IFS.
 
-- [ ] T010 Create `frontend/src/data/types.ts`: TypeScript interfaces — `ForecastMetadata`, `VariableMeta`, `GridInfo`, `BBoxInfo`; typed to match `forecast.json` schema in plan.md
-- [ ] T011 Create `forecast/postprocessing/artifact_writer.py`: `write_artifacts(t2m_celsius, tp1h_mm, metadata, output_dir)` — writes `temperature.bin`, `precipitation.bin` as float32 [169×81×41] C-order, writes `forecast.json` with full schema
-- [ ] T012 Create `forecast/postprocessing/unit_conversion.py`: `kelvin_to_celsius(arr)` and `tp1h_log_to_mm(arr)` functions per plan.md docstrings
-- [ ] T013 Create `scripts/generate_demo_data.py`: CPU-only; generates synthetic t2m (sinusoidal, 15–40°C range across Myanmar lat/lon/time) and tp1h (Gaussian blobs, 0–30 mm/h); writes to `data/demo/` with `is_demo: true`; must complete in < 60s; no imports of earth2studio or torch
-- [ ] T014 Run `scripts/generate_demo_data.py` and verify `data/demo/` contains three files
-- [ ] T015 Create `scripts/validate_forecast.py`: checks — file existence, shape [169×81×41], NaN count (FAIL if > 0 in expected fields), tp1h ≥ 0, t2m in [−20, 60]°C, timestamps monotonically increasing, `sic_handling` field non-empty; prints PASS/FAIL per check
-- [ ] T016 Run `scripts/validate_forecast.py --data-dir data/demo/` and verify all PASS
-- [ ] T017 Commit `data/demo/` artifacts to git
+- [x] T010 Rewrite `scripts/generate_forecast.py`:
+  - Uses `earth2studio.models.px.GraphCastSmall`
+  - Default source: ARCO (historical); flag `--source [arco|ifs]`
+  - Two-timestep init handled by Earth2Studio via input_coords lead_time=[-6h,0h]
+  - nsteps=4 (produces t+6h, t+12h, t+18h, t+24h)
+  - Extracts tp06 from zarr output; applies ×1000 (no exp); clamps ≥ 0
+  - Subsets to Myanmar bbox: lat 9–29°N, lon 92–102°E (21×11 at 1.0°)
+  - Handles descending lat (90→-90) by checking and flipping to ascending
+  - Prepends t+0h init frame → [5 × 21 × 11] total
+  - Writes `precipitation.bin` as float32 C-order
+  - Writes `forecast.json` with schema v2.0
+  - Records GPU type and VRAM in `inference_config` field
+  - JAX env vars set before imports: XLA_PYTHON_CLIENT_PREALLOCATE=false,
+    XLA_PYTHON_CLIENT_MEM_FRACTION=0.85
+  - All Aurora1p5, tp1h, sic, log-untransform references removed
 
-**Checkpoint**: `data/demo/forecast.json`, `data/demo/temperature.bin`, `data/demo/precipitation.bin` committed. `validate_forecast.py` reports all PASS.
+- [x] T011 Staged VRAM test:
+  - Stage 1: GPU detection + baseline VRAM (PyTorch + JAX separately)
+  - Stage 2: Model load + VRAM snapshot
+  - Stage 3a: Single-step smoke test (nsteps=1) — OOM → exit code 1
+  - Stage 3b: Full 4-step run (nsteps=4) if smoke test passes
+  - --smoke-test-only flag: stop after stage 3a
+  - VRAM reported via both torch.cuda and jax.devices()[0].memory_stats()
 
----
+  **Discovery**: JAX uses its own GPU memory pool separate from PyTorch's allocator.
+  torch.cuda.memory_allocated() reflects only data-transport tensors, not model weights.
+  XLA_PYTHON_CLIENT_PREALLOCATE=false prevents JAX pre-allocating ~90% of VRAM.
+  This is documented in forecast.json inference_config.jax_env.
 
-## Phase 3: User Stories 1 & 4 — Interactive Map + Variable Switcher (P1)
+  **NOT applied**: model.to(bfloat16) — GraphCastSmall already uses bfloat16 internally
+  via casting.Bfloat16Cast in JAX. Calling .to(bfloat16) on the torch.nn.Module wrapper
+  has no effect on JAX weights and must NOT be done.
 
-**Goal**: Map renders Myanmar with colored weather overlay. Variable switcher changes overlay and legend.
+- [ ] T012 Update `frontend/src/data/types.ts`:
+  - `n_times: number` (was hard-coded expectations)
+  - `native_timestep_hours: number` (new field)
+  - `spatial_resolution_deg: number`
+  - `display_resolution_deg: number | null` (new field)
+  - `inference_config: { device: string; peak_vram_gb: number | null } | undefined`
+  - `transformation_provenance` in precipitation variable metadata
+  - Remove any Aurora/sic/tp1h references
 
-**Independent Test**: `npm run dev` → browser shows Myanmar temp overlay with °C legend. Clicking Precipitation changes to mm/h overlay.
-
-### Data Loading
-
-- [ ] T018 Create `frontend/src/data/ForecastLoader.ts`: `loadForecast(baseUrl)` async function — fetches `forecast.json`, fetches `temperature.bin` + `precipitation.bin` as ArrayBuffer, wraps in Float32Array; exports `getFrame(data, variable, hour, nLat, nLon)` returning `Float32Array[nLat × nLon]`
-- [ ] T019 Create `frontend/src/data/ForecastStore.ts`: Zustand store with all state fields from plan.md; `initialize()` action calls `ForecastLoader.loadForecast()`; auto-loads demo data on startup via `VITE_DATA_URL` env (default: `./data/`)
-
-### Map + Overlay (US1)
-
-- [ ] T020 Download Myanmar boundary GeoJSON from Natural Earth Admin-0, clip to Myanmar, save as `frontend/public/geo/myanmar-boundary.geojson` (< 200 KB)
-- [ ] T021 Create `frontend/src/map/colorscales.ts`: `buildColormap(stops)` utility; `TEMP_COLORMAP` (15°C blue → 40°C red); `PRECIP_COLORMAP` (0 white → 50+ red); both return `Uint8Array[256×4]`; exports `applyColorscale(frame, colormap, min, max): Uint8ClampedArray`
-- [ ] T022 Create `frontend/src/map/WeatherMap.tsx`: MapLibre GL JS map, center `[96, 19]`, zoom 5, OSM raster basemap (no API key), Myanmar GeoJSON boundary line layer; exposes `mapRef` for child layers
-- [ ] T023 Create `frontend/src/map/WeatherLayer.tsx`: reads `activeVariable` + `currentHour` from store; calls `getFrame()` → `applyColorscale()` → `new ImageData(rgba, nLon, nLat)` → `map.addImage()` on mount, `map.updateImage()` on frame change; positions image over Myanmar bbox
-- [ ] T024 Wire `WeatherLayer` inside `WeatherMap`
-
-### Variable Switcher + Legend (US4)
-
-- [ ] T025 Create `frontend/src/components/VariableSwitcher.tsx`: two-button toggle (🌡 Temperature | 🌧 Precipitation); calls `store.setVariable()`; active button has distinct visual state
-- [ ] T026 Create `frontend/src/components/Legend.tsx`: reads `activeVariable` from store; renders gradient bar with tick labels — temp: 15/20/25/30/35/40°C; precip: 0/1/5/10/25/50 mm/h; precipitation tooltip with disclosure text from `metadata.variables.precipitation.temporal_disclosure`
-- [ ] T027 Create `frontend/src/App.tsx`: layout — header area, full-viewport map, bottom controls (legend + variable switcher + timeline); wire all components
-- [ ] T028 Create `frontend/src/components/DemoBanner.tsx`: fixed amber banner shown when `metadata.is_demo === true`
-
-**Checkpoint**: `npm run dev` → Myanmar map visible, temperature overlay colored, legend shows °C. Switching to Precipitation changes overlay and legend to mm/h. Demo banner visible.
-
----
-
-## Phase 4: User Story 2 — Timeline + Time Display (P1)
-
-**Goal**: Slider steps through hours 0–168. Map, timestamp, and lead time update synchronously.
-
-**Independent Test**: Drag slider to hour 48 → map changes, header shows init_time + 48h, lead time shows "+48 h".
-
-- [ ] T029 Create `frontend/src/components/Header.tsx`: reads `metadata` from store; shows app title ("MYANMAR WEATHER / AI FORECAST"), model name, spatial resolution, init time (UTC); shows current valid time + lead time for `currentHour`
-- [ ] T030 Create `frontend/src/components/Timeline.tsx`: `<input type="range" min=0 max=168 step=1>`; reads `currentHour` from store; calls `setHour()` on change; shows forecast date (day+month) and time (HH:00 UTC) for current hour; shows "+N h" lead time
-- [ ] T031 Implement `store.stepForward()` and `store.stepBackward()` with clamping to [0, 168]
-- [ ] T032 Add Prev (◀) and Next (▶) buttons to `Timeline.tsx`
-- [ ] T033 Wire `Timeline` and `Header` into `App.tsx`
-
-**Checkpoint**: Slider moves → map and time display update together. Prev/Next work. Boundary clamping works.
+**Checkpoint**: `generate_forecast.py --source arco --init-time 2023-01-01T00:00:00Z` produces
+`data/forecast/precipitation.bin` (4,620 bytes) and valid `forecast.json` on a CUDA machine.
 
 ---
 
-## Phase 5: User Story 3 — Playback Animation (P2)
+## Phase 3: Demo Data Update
 
-**Goal**: Play button animates forecast. Speed controls change tick rate.
+**Goal**: Update `scripts/generate_demo_data.py` for 5 frames, 21×11 grid, tp06-only.
 
-- [ ] T034 Add `isPlaying`, `playbackSpeed`, `togglePlay()`, `setSpeed()` to `ForecastStore.ts`
-- [ ] T035 Implement animation loop in `App.tsx` or `Timeline.tsx`: `useEffect` with `setInterval` driven by `isPlaying` + `playbackSpeed`; advance `currentHour` by 1 per tick; loop back to 0 at 168; clear interval on unmount
-- [ ] T036 Add Play/Pause (▶ / ⏸) button to `Timeline.tsx`
-- [ ] T037 Add speed selector (0.5× / 1× / 2× / 4×) to `Timeline.tsx`
+- [ ] T013 Rewrite `scripts/generate_demo_data.py`:
+  - N_TIMES = 5 (was 49 for 48h, now 5 for 24h at 6h steps)
+  - N_LAT = 21, N_LON = 11 (was 81, 41 for 0.25°)
+  - Generate precipitation only (no temperature)
+  - Synthetic tp06: Gaussian blobs at realistic Myanmar positions, range 0–80 mm/6h
+  - Write `precipitation.bin` [5 × 21 × 11] float32
+  - Write `forecast.json` with schema v2.0 matching plan.md
+  - `is_demo: true`, `model: "GraphCastSmall"`, `spatial_resolution_deg: 1.0`
+  - `native_timestep_hours: 6`, `forecast_horizon_hours: 24`, `n_times: 5`
+  - times_utc: 5 entries at 6h spacing
+  - Remove temperature generation entirely
 
-**Checkpoint**: Play animates through all 168 hours. Pause stops. Speed buttons change rate. Map stays synchronized.
+- [ ] T014 Run `scripts/generate_demo_data.py` and verify `data/demo/` contains 2 files:
+  - `data/demo/forecast.json`
+  - `data/demo/precipitation.bin` (4,620 bytes exactly)
 
----
+- [ ] T015 Commit updated `data/demo/` artifacts to git
 
-## Phase 6: User Story 5 — Point Inspector (P2)
-
-**Goal**: Click on Myanmar map → popup shows t2m + tp1h at nearest grid point.
-
-- [ ] T038 Create `frontend/src/components/PointInspector.tsx`: popup showing lat/lon, valid time, t2m (°C, 1dp), tp1h (mm/h, 2dp), note about 0.25° grid resolution
-- [ ] T039 Add click handler to `WeatherMap.tsx`: on click → compute nearest grid indices `(lat_i, lon_i)` by rounding to 0.25° grid; lookup both variables from Float32Array at `currentHour`; show `PointInspector` at click lngLat
-- [ ] T040 Handle out-of-bounds click: if lngLat outside Myanmar bbox, show "Outside forecast domain"
-- [ ] T041 Update popup values reactively when `currentHour` changes while popup is open
-
-**Checkpoint**: Click within Myanmar bbox → popup with correct values. Moving slider → popup updates. Outside bbox → message shown.
-
----
-
-## Phase 7: User Story 6 — Info Panel + Attribution (P3)
-
-- [ ] T042 Create `frontend/src/components/InfoPanel.tsx`: modal/panel with all metadata from `forecast.json` — model name/version, resolution, init source, init time, valid range, temperature semantics (hourly), precipitation semantics (1-hour accumulation, mm/h disclosure), limitations (resolution, uncertainty, sic patch disclosure), attribution (Aurora/Microsoft, Earth2Studio/NVIDIA, ECMWF open data, OSM basemap)
-- [ ] T043 Add Info (ℹ) button to `Header.tsx` that opens/closes `InfoPanel`
-- [ ] T044 Verify `DemoBanner` (T028) is wired correctly; add clear language in InfoPanel when `is_demo: true`
-
-**Checkpoint**: Info button opens panel with correct metadata. Demo banner visible in demo mode.
+**Checkpoint**: `data/demo/precipitation.bin` is 4,620 bytes. `forecast.json` has `n_times: 5`,
+`spatial_resolution_deg: 1.0`, `is_demo: true`.
 
 ---
 
-## Phase 8: Earth2Studio Pipeline (Production GPU Forecast)
+## Phase 4: Frontend Updates
 
-**Goal**: Full Aurora1p5 + IFS pipeline producing real forecast artifacts.
+**Goal**: Update frontend to match GraphCastSmall artifact format (6h steps, 5 frames, 21×11,
+precipitation only, tp06 disclosure).
 
-- [ ] T045 Create `forecast/models/base.py`: `ForecastModel` abstract base class per plan.md interface
-- [ ] T046 Create `forecast/sources/base.py`: `InitializationSource` abstract base class
-- [ ] T047 Create `forecast/sources/ncar_era5_source.py`: `NCAR_ERA5Source` — wraps `earth2studio.data.NCAR_ERA5`; provides all 83 Aurora1p5 input variables including sic; for development/historical init times
-- [ ] T048 Create `forecast/sources/ifs_source.py`: `IFSSource` — wraps `earth2studio.data.IFS`; handles `sic` gap via configurable method (`"zero"` or `"arco"`); returns `sic_handling` description string for metadata
-- [ ] T049 Create `forecast/models/aurora1p5_forecast.py`: `Aurora1p5Forecast(ForecastModel)` — loads model weights via `Aurora1p5.load_default_package()`; runs `earth2studio.run.deterministic()` with `ZarrBackend`; extracts `t2m` and `tp1h` from output; returns xarray Dataset
-- [ ] T050 Create `forecast/postprocessing/myanmar_subset.py`: `subset_myanmar(ds)` — `ds.sel(lat=slice(9.0, 29.0), lon=slice(92.0, 102.0))`; verifies resulting grid is 81×41
-- [ ] T051 Create `scripts/generate_forecast.py`: CLI (`--init-time`, `--init-source`, `--sic-method`, `--output-dir`); orchestrates T047–T050 and T011–T012; writes to `data/forecast/`
-- [ ] T052 Test `generate_forecast.py` with NCAR_ERA5 source and a historical init time (e.g., 2024-06-01T00:00:00Z)
-- [ ] T053 Run `validate_forecast.py --data-dir data/forecast/` and verify all checks PASS
+### Already completed (precipitation-only migration)
 
-**Checkpoint**: `generate_forecast.py` produces valid artifacts for a historical init time. All validation PASS.
+- [x] VariableSwitcher.tsx replaced with no-op `export {}`
+- [x] ForecastStore.ts: removed `activeVariable`, `setVariable`, temperature state
+- [x] ForecastLoader.ts: precipitation only, no temperature fetch
+- [x] WeatherMap.tsx: precipitation-only rendering
+- [x] Legend.tsx: precipitation-only
+- [x] Header.tsx: title updated, staleness logic present
 
----
+### Remaining frontend updates
 
-## Phase 9: Tests
+- [ ] T020 Update `frontend/src/components/Timeline.tsx`:
+  - Slider `max` must come from `metadata.n_times - 1` (not hard-coded 48 or 168)
+  - Step buttons advance by 1 index (each index = 6h)
+  - Hour markers: show "0h · 6h · 12h · 18h · 24h" (not "0h · 24h · 48h")
+  - Lead time display: `currentHour * (metadata.native_timestep_hours ?? 6)` hours
+  - Animation loop: step by 1 index; loop from index 4 back to 0
 
-- [ ] T054 [P] `tests/test_unit_conversion.py`: test `kelvin_to_celsius` (273.15K → 0°C, negative results for sub-freezing); test `tp1h_log_to_mm` (log(0.001) → ~1mm; negative input → 0 after clamp)
-- [ ] T055 [P] `tests/test_myanmar_subset.py`: test `subset_myanmar` returns shape (n_time, 81, 41); test lat/lon bounds are correct; test out-of-bounds global data is clipped
-- [ ] T056 [P] `tests/test_pipeline_interface.py`: test that `Aurora1p5Forecast` implements `ForecastModel` interface; test `IFSSource` implements `InitializationSource`; mock Earth2Studio models to avoid GPU in tests
-- [ ] T057 [P] `tests/test_validation.py`: test `validate_forecast.py` catches NaN values (FAIL expected); catches negative tp1h (FAIL); catches wrong shape (FAIL); passes on valid demo data (PASS)
-- [ ] T058 [P] `frontend/src/data/ForecastLoader.test.ts`: test `getFrame()` returns correct [81×41] slice for given hour; test frame 0 returns initialization data; test frame 168 returns last forecast
-- [ ] T059 [P] `frontend/src/map/colorscales.test.ts`: test min value → first color; test max value → last color; test NaN → transparent (alpha=0)
-- [ ] T060 Run `pytest tests/` → all pass; run `npm test` in `frontend/` → all pass
+- [ ] T021 Update `frontend/src/components/Header.tsx`:
+  - Title: "Myanmar 24h Precipitation" (was "Myanmar 48h Precipitation")
+  - Staleness threshold: 48h (was 72h; forecast horizon is now 24h)
+  - Resolution display: use `metadata.spatial_resolution_deg` and `metadata.display_resolution_deg`
 
----
+- [ ] T022 Update `frontend/src/components/InfoPanel.tsx`:
+  - Horizon field: read from `metadata.forecast_horizon_hours` (was hard-coded "2 days")
+  - Limitations bullet: update resolution reference from 0.25° to read from metadata
+  - Limitations bullet: update precipitation accumulation period from "1-hour" to "6-hour"
+  - Add `native_timestep_hours` row to metadata grid
+  - Remove any remaining Aurora/tp1h/sic references
 
-## Phase 10: Integration Testing
+- [ ] T023 Update `frontend/src/data/ForecastLoader.ts`:
+  - Verify `ForecastData` has only `precipitation` (no temperature)
+  - Verify loader does not hard-code array dimensions; derive from metadata
 
-- [ ] T061 Copy `data/forecast/` artifacts (from T052) to `frontend/public/data/`
-- [ ] T062 Run `npm run dev` with production artifacts; verify: correct timestamps, realistic t2m values, tp1h ≥ 0
-- [ ] T063 Profile frame transitions in Chrome DevTools: confirm < 200ms per transition
-- [ ] T064 Profile initial load on simulated 25 Mbps (Chrome Network throttle): confirm < 5s to interactive
-- [ ] T065 Test on mobile viewport (375px): map usable, controls accessible
+- [ ] T024 Verify `frontend/src/map/WeatherMap.tsx`:
+  - Legend and popup reference tp06 / mm/6h correctly
+  - No Aurora or tp1h strings present
 
----
-
-## Phase 11: GitHub Actions + Deployment
-
-- [ ] T066 Create `.github/workflows/deploy-pages.yml` per plan.md spec
-- [ ] T067 Verify `frontend/vite.config.ts` reads `VITE_BASE_PATH` and sets Vite `base` correctly
-- [ ] T068 Enable GitHub Pages in repository settings: Source → GitHub Actions
-- [ ] T069 Push to main; verify GitHub Actions workflow completes (green checkmark)
-- [ ] T070 Open deployed GitHub Pages URL; verify: map loads, demo banner visible, timeline works, variable switcher works, info panel opens with correct metadata
-- [ ] T071 Refresh the deployed page; verify app loads correctly (no broken routing)
+**Checkpoint**: `npm run dev` with updated demo data shows Myanmar map, 5-step timeline (0, 6,
+12, 18, 24h markers), and mm/6h legend. Slider max = 4. Header shows "Myanmar 24h Precipitation".
 
 ---
 
-## Phase 12: Documentation
+## Phase 5: Validation Script Update
 
-- [ ] T072 Fill in `README.md`: Project Overview, Architecture diagram (ASCII), Model description (Aurora1p5 + IFS, tp1h semantics), Installation commands, Local Development commands, Forecast Generation commands (with GPU note), Data Format, Testing commands, Deployment guide, Limitations
-- [ ] T073 Create `docs/architecture.md`: system diagram, component roles, data flow
-- [ ] T074 [P] Create `docs/forecasting.md`: Aurora1p5 details, IFS initialization, sic gap, tp1h log untransform, hourly rollout mechanism, GPU requirements, cloud GPU options, model interface
-- [ ] T075 [P] Create `docs/deployment.md`: Steps 1–19 per spec with exact commands and expected results
-- [ ] T076 [P] Create `docs/data-format.md`: complete `forecast.json` schema, binary format spec, JavaScript and Python reading examples
+**Goal**: Update `scripts/validate_forecast.py` for new dimensions and tp06 semantics.
+
+- [ ] T025 Update `scripts/validate_forecast.py`:
+  - Expected shape: [5, 21, 11] (was [169, 81, 41] or [49, 81, 41])
+  - Check: `n_times == 5`, `n_lat == 21`, `n_lon == 11`
+  - Check: `native_timestep_hours == 6`
+  - Check: `forecast_horizon_hours == 24`
+  - Check: tp06 ≥ 0 (no negative precipitation)
+  - Check: tp06 < 500 mm/6h (extreme upper bound for tropical rainfall)
+  - Check: timestamps 6h apart and monotonically increasing
+  - Check: `transformation_provenance.log_transform_applied == false`
+  - Remove temperature validation, t2m range check, sic_handling check
+
+- [ ] T026 Run `scripts/validate_forecast.py --data-dir data/demo/` and verify all checks PASS
+
+**Checkpoint**: All validation checks PASS for the updated demo data.
+
+---
+
+## Phase 6: Colab Notebook Rewrite
+
+**Goal**: Replace `notebooks/aurora_myanmar_forecast.ipynb` with `notebooks/graphcast_myanmar_forecast.ipynb`.
+
+- [x] T030 Rename `notebooks/aurora_myanmar_forecast.ipynb` → `notebooks/graphcast_myanmar_forecast.ipynb`
+  - `git mv` to preserve git history
+
+- [x] T031 Rewrite notebook content for GraphCastSmall:
+  - Section 1: Title, architecture summary (GraphCastSmall, tp06, 6h, 24h)
+  - Section 2: Install `earth2studio[graphcast]` (or equivalent extras); no cudf uninstall needed
+  - Section 3: GPU detection and baseline VRAM measurement
+  - Section 4: ARCO data fetch test (t-6h and t+0h) — no IFS fallback complexity for initial test
+  - Section 5: Load GraphCastSmall weights, measure VRAM
+  - Section 6: Single-step inference VRAM test (staged VRAM check per §XI)
+    - If OOM: stop with clear error; do not proceed to full run
+  - Section 7: Full 24h forecast run (4 steps)
+  - Section 8: Post-process tp06 → mm/6h (×1000, no exp, clamp ≥ 0)
+  - Section 9: Myanmar subset (21×11)
+  - Section 10: Write artifacts (precipitation.bin, forecast.json)
+  - Section 11: Validate artifacts
+  - Section 12: Git commit + push to trigger GitHub Actions deploy
+  - Remove all Aurora1p5, sic patch, tp1h, exp(), torch references
+
+- [ ] T032 Verify notebook runs from top to bottom on Colab without error on a fresh runtime
+  (with GPU; skip full inference in dry run, verify at least up to Section 6)
+
+**Checkpoint**: Notebook renamed. Content updated for GraphCastSmall. Staged VRAM test in place.
+
+---
+
+## Phase 7: Integration Testing
+
+- [ ] T040 Copy demo data to frontend/public/data/ and run `npm run dev`; confirm:
+  - 5-frame timeline with 6h labels
+  - Precipitation overlay renders on Myanmar map
+  - Slider max = 4; steps advance correctly
+  - Header shows "Myanmar 24h Precipitation"
+  - InfoPanel shows correct GraphCastSmall metadata
+
+- [ ] T041 Run `npm run build` in `frontend/` and confirm no TypeScript errors
+
+- [ ] T042 Profile frame transitions in browser DevTools: confirm < 200ms
+
+- [ ] T043 Push to main; confirm GitHub Actions green; confirm GitHub Pages loads demo data
+  with DEMO DATA banner visible
+
+---
+
+## Phase 8: README Update
+
+- [ ] T050 Update `README.md`:
+  - Architecture section: GraphCastSmall (1.0°, 6h, 24h, tp06)
+  - Remove Aurora1p5 references
+  - Update pipeline section: ARCO/IFS, two-timestep init, tp06 → mm/6h
+  - Update Colab notebook link to graphcast_myanmar_forecast.ipynb
+  - Update data format section: [5 × 21 × 11], 4.6 KB
+  - Note: T4 (16 GB) VRAM compatibility pending experimental verification
 
 ---
 
 ## Dependencies & Execution Order
 
-### Phase Dependencies
+- **Phase 1** (Spec Kit): COMPLETE
+- **Phase 2** (Pipeline): Start now — depends on Phase 1 spec
+- **Phase 3** (Demo Data): After Phase 2 (format locked by generate_forecast.py schema)
+- **Phase 4** (Frontend): After Phase 3 (needs committed demo data for dev testing)
+- **Phase 5** (Validation): After Phase 3 (needs correct dimensions)
+- **Phase 6** (Notebook): After Phase 2 (needs working pipeline code to port)
+- **Phase 7** (Integration): After Phases 3, 4, 5
+- **Phase 8** (README): After Phase 7
 
-- **Phase 1** (Setup): Start immediately — no dependencies
-- **Phase 2** (Demo Data): Depends on Phase 1 — **BLOCKS all frontend work**
-- **Phase 3** (Map + Variable Switcher): Depends on Phase 2
-- **Phase 4** (Timeline): Depends on Phase 3 map foundation
-- **Phase 5** (Animation): Depends on Phase 4 store
-- **Phase 6** (Point Inspector): Depends on Phase 3 map + Phase 2 data
-- **Phase 7** (Info Panel): Depends on Phase 2 metadata + Phase 3 layout
-- **Phase 8** (Pipeline): Depends on Phase 1; independent of frontend phases
-- **Phase 9** (Tests): Write alongside implementation; run after Phase 8 for pipeline tests
-- **Phase 10** (Integration): Depends on Phase 8 + Phase 5
-- **Phase 11** (Deployment): Depends on all frontend phases + Phase 2 demo data
-- **Phase 12** (Docs): Can start any time; finalize after Phase 11
+### MVP Path (Phases 2–5 + deployment)
 
-### Parallel Tracks
-
-Phase 8 (Earth2Studio pipeline) can run entirely in parallel with Phases 3–7 (frontend), as both depend only on Phase 2's locked data contract.
-
-### MVP Path (Phases 1–4 + 11)
-
-Complete Phases 1 → 2 → 3 → 4 → 11 for a working deployed GitHub Pages app with:
-- Myanmar weather map
-- Temperature + precipitation overlay
-- Hourly timeline navigation
-- Demo data with DEMO banner
-
-**STOP and VALIDATE** before continuing to Phase 5+.
+Complete Phases 2 → 3 → 4 → 5 → deploy for a working GitHub Pages app with:
+- Myanmar 24h precipitation map
+- 5-step timeline at 6h increments
+- GraphCastSmall demo data with DEMO banner
 
 ---
 
@@ -230,39 +262,31 @@ Complete Phases 1 → 2 → 3 → 4 → 11 for a working deployed GitHub Pages a
 
 | Criterion | Tasks |
 |-----------|-------|
-| Earth2Studio actually used | T049–T052 |
-| Myanmar forecast generated | T050, T052 |
-| 7-day forecast produced | T049 |
-| Hourly frames native (no interpolation) | T049 (Aurora1p5 native rollout) |
-| Temperature available | T049, T050 |
-| Precipitation available (native tp1h) | T049, T050 |
-| Units correct (°C, mm/h) | T012, T054 |
-| tp1h log untransform applied | T012, T054 |
-| Timestamps correct | T015, T057 |
-| Resolution documented | T029, T042 |
-| Myanmar map visible | T022 |
-| Zoom/pan works | T022 |
-| Weather overlay works | T023–T024 |
-| Legend works | T026 |
-| Location inspector | T038–T041 |
-| Hourly slider | T030–T031 |
-| Prev/Next buttons | T032 |
-| Play/Pause | T035–T036 |
-| Timestamp updates | T030 |
-| Map updates with slider | T023 (reactive) |
-| Lead time updates | T030 |
-| Precipitation mode | T025–T026 |
-| Temperature mode | T025–T026 |
-| Precip tooltip disclosure | T026, T033 (FR-033) |
-| TypeScript strict | T006 |
-| Python ruff | T002 |
-| Tests exist | T054–T059 |
-| Forecast validation | T015–T016 |
-| Demo data | T013–T017 |
-| sic gap handled + documented | T048 |
-| Production path documented | T072–T074 |
-| No secrets committed | T007 |
-| README complete | T072 |
-| GitHub Pages works | T069–T071 |
-| GitHub Actions works | T069 |
-| Refresh doesn't break | T071 |
+| Earth2Studio actually used (GraphCastSmall) | T010 |
+| Myanmar forecast generated (24h) | T010 |
+| 6h native steps (no interpolation) | T010, T020 |
+| tp06 precipitation available | T010 |
+| No log/exp transform applied | T010, T025 |
+| Units correct (mm/6h) | T010, T013 |
+| Two-timestep init (t-6h + t+0h) | T010 |
+| Staged VRAM test | T011, T031 |
+| Timestamps correct (6h spacing) | T013, T025 |
+| Resolution documented (1.0°) | T012, T022 |
+| Myanmar map visible | T024 |
+| Precipitation overlay works | T024 |
+| Legend correct (mm/6h) | T024 |
+| 5-step slider (0,6,12,18,24h) | T020 |
+| Lead time display correct | T020 |
+| Play/Pause animation | T020 |
+| Point inspector (popup) | T024 |
+| tp06 disclosure in UI | T022 |
+| Header: 24h title | T021 |
+| InfoPanel: 6h accumulation disclosure | T022 |
+| Resolution honesty disclosure | T022 |
+| TypeScript strict (no errors) | T041 |
+| Demo data correct format | T013–T015 |
+| Validation all PASS | T026 |
+| GitHub Pages deployment | T043 |
+| Notebook renamed + rewritten | T030–T032 |
+| README updated | T050 |
+| No secrets committed | (existing .gitignore) |

@@ -34,7 +34,7 @@ export async function loadForecast(baseUrl: string): Promise<ForecastData> {
 /**
  * Extract a single [n_lat × n_lon] frame from a flat Float32Array.
  * @param data   Full array [n_times × n_lat × n_lon]
- * @param hour   Time index (0 = init, 1..168 = forecast)
+ * @param hour   Frame index (0 = init, 1..n_times-1 = forecast)
  * @param nLat   Number of latitude points
  * @param nLon   Number of longitude points
  */
@@ -74,16 +74,17 @@ export function nearestGridPoint(
   lats: number[],
   lons: number[],
 ): { latIdx: number; lonIdx: number } | null {
+  const step = lats[1] - lats[0];
+  const half = step / 2;
   if (
-    lat < lats[0] - 0.125 ||
-    lat > lats[lats.length - 1] + 0.125 ||
-    lon < lons[0] - 0.125 ||
-    lon > lons[lons.length - 1] + 0.125
+    lat < lats[0] - half ||
+    lat > lats[lats.length - 1] + half ||
+    lon < lons[0] - half ||
+    lon > lons[lons.length - 1] + half
   ) {
     return null;
   }
   // Find nearest index
-  const step = lats[1] - lats[0]; // 0.25
   const latIdx = Math.round((lat - lats[0]) / step);
   const lonIdx = Math.round((lon - lons[0]) / step);
   return {

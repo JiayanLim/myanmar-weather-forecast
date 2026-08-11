@@ -4,13 +4,6 @@ import type { PlaybackSpeed } from '../data/types';
 
 const SPEEDS: PlaybackSpeed[] = [0.5, 1, 2, 4];
 
-function formatValidTime(iso: string): { date: string; time: string; lead: number } {
-  const d = new Date(iso);
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const date = `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
-  const time = `${d.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
-  return { date, time, lead: 0 };
-}
 
 export function Timeline() {
   const {
@@ -19,11 +12,11 @@ export function Timeline() {
   } = useForecastStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const maxHour = metadata?.forecast_horizon_hours ?? 48;
+  const maxIndex = (metadata?.n_times ?? 5) - 1;
 
   const tick = useCallback(() => {
     const store = useForecastStore.getState();
-    if (store.currentHour >= (store.metadata?.forecast_horizon_hours ?? 48)) {
+    if (store.currentHour >= (store.metadata?.n_times ?? 5) - 1) {
       useForecastStore.getState().setHour(0);
     } else {
       store.stepForward();
@@ -43,8 +36,8 @@ export function Timeline() {
   }, [isPlaying, playbackSpeed, tick]);
 
   const validTime = metadata?.times_utc?.[currentHour];
-  const initTime = metadata?.times_utc?.[0];
-  const leadHours = currentHour;
+  const stepHours = metadata?.native_timestep_hours ?? 6;
+  const leadHours = currentHour * stepHours;
 
   let dateStr = '—';
   let timeStr = '—';
@@ -78,7 +71,7 @@ export function Timeline() {
         <input
           type="range"
           min={0}
-          max={maxHour}
+          max={maxIndex}
           step={1}
           value={currentHour}
           onChange={(e) => setHour(Number(e.target.value))}
@@ -125,10 +118,14 @@ export function Timeline() {
         {/* Hour markers */}
         <div className="flex items-center gap-1 text-[9px] text-slate-600">
           <span>0h</span>
-          <span className="mx-1">·</span>
+          <span className="mx-0.5">·</span>
+          <span>6h</span>
+          <span className="mx-0.5">·</span>
+          <span>12h</span>
+          <span className="mx-0.5">·</span>
+          <span>18h</span>
+          <span className="mx-0.5">·</span>
           <span>24h</span>
-          <span className="mx-1">·</span>
-          <span>48h</span>
         </div>
       </div>
     </div>

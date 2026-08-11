@@ -1,131 +1,148 @@
 # Research: Myanmar Weather Forecast App — Earth2Studio Discovery
 
 **Feature**: 001-myanmar-weather-app
-**Date**: 2026-08-09 (revised)
-**Phase**: Phase 0 Research (verified against live Earth2Studio docs)
+**Date**: 2026-08-11 (revised — Aurora1p5 → GraphCastSmall migration)
+**Phase**: Phase 0 Research (verified against live Earth2Studio docs and source code)
 
 ---
 
 ## ARCHITECTURE DECISION RECORD
 
-### ADR-001: Model Selection — Aurora1p5
+### ADR-001: Model Selection — GraphCastSmall (supersedes Aurora1p5)
 
-**Decision**: Use `earth2studio.models.px.Aurora1p5` as the primary prognostic model.
+**Decision**: Use `earth2studio.models.px.GraphCastSmall` as the primary prognostic model.
 
-**Why Aurora1p5**:
-- 0.25° global resolution (appropriate for Myanmar synoptic-scale visualization)
-- **Native hourly rollout**: produces t+1h through t+168h at 1-hour resolution without interpolation
-- **Native `tp1h` output**: 1-hour accumulated total precipitation is a first-class model output
-- Fine-tuned on IFS operational analyses → best skill when initialized with IFS
-- Model weights: HuggingFace `hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab`
-- Checkpoint: `aurora-0.25-v1.5.ckpt` (deterministic), `aurora-0.25-v1.5-ensemble.ckpt` (stochastic)
-- VRAM requirement: 48 GB GPU
+**Context**: Aurora1p5 was the original model selection. It failed at the first inference step
+on a free Colab NVIDIA T4 (16 GB VRAM) with `OutOfMemoryError` — 13.38 GB already allocated,
+attempted to allocate 824 MB when only 571 MB remained. Memory optimizations (bfloat16,
+inference_mode, expandable_segments) were applied but insufficient for Aurora1p5's attention
+mechanism at 0.25° resolution.
 
-**Why NOT Aurora (base)**:
-- Aurora base outputs only 4 surface variables; Aurora1p5 outputs 18 surface variables
-- Aurora1p5 has richer diagnostic outputs including `tp1h`
+**Why GraphCastSmall**:
+- 1.0° global resolution — substantially smaller activation memory than Aurora1p5's 0.25°
+- JAX backend (not PyTorch) — different memory management; footprint unknown but bounded
+- Native `tp06` output: 6-hour accumulated total precipitation is a first-class model output
+- No diagnostic model required (no PrecipitationAFNO)
+- Scientifically valid global medium-range forecast model (DeepMind/Google)
+- Model weights: freely available via Google Cloud Storage
+- Checkpoint: `params/GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz`
+- Package source: `gs://dm_graphcast/graphcast`
 
-**Why NOT AIFS**:
-- AIFS requires IFS operational analysis with flux accumulation variables (tp06, cp06, ssrd06, strd06, etc.)
-- Higher complexity initialization; same VRAM requirement (40 GB)
-- Aurora1p5 is the stated primary candidate
+**What remains unknown**:
+- Whether GraphCastSmall actually fits on T4 (16 GB) — MUST be tested experimentally
+- Rec VRAM badge states 40 GB; T4 has 16 GB; compatibility is unverified
+
+**Constraints accepted vs. Aurora1p5**:
+- 1.0° resolution (coarser than Aurora1p5's 0.25°)
+- 6h native timestep (not hourly)
+- 24h forecast horizon (vs. 168h)
+- tp06 (6h accumulated) rather than tp1h (1h accumulated)
+- No sea ice concentration (sic) gap to handle — GraphCastSmall inputs do not require sic
+
+**Variable specification** (verified from Earth2Studio source):
+- 83 total input variables covering atmospheric and surface fields
+- tp06 (6h total precipitation in metres) is included in input AND output
+- No log transform is applied to tp06 — it is already in physical space
+- Myanmar at 1.0° grid: 21 lat points (9–29°N) × 11 lon points (92–102°E)
 
 ---
 
-### ADR-002: Initialization Source — IFS (with NCAR_ERA5 fallback)
+### ADR-002: Initialization Source — ARCO (primary) / IFS (operational)
 
-**Decision**: IFS open-data analysis as primary; NCAR_ERA5 as development/historical fallback.
+**Decision**: ARCO as primary historical/development source; IFS for operational real-time.
+NCAR_ERA5 is NOT compatible. GFS is NOT a verified compatible source.
 
-**Why IFS is required**:
-From Aurora1p5 source docstring (verified):
-> "Aurora v1.5 was pretrained on ERA5 and fine-tuned on IFS operational analyses and as such recommended to be initialized with IFS analyses."
-> "GFS is not supported due to missing surface variables."
+**Why ARCO**:
+- Provides all 83 GraphCastSmall input variables including tp06
+- Free via Google Cloud (zarr) — no credentials required
+- Historical ERA5 reanalysis (1959–2023) — suitable for development and historical validation
+- Verified compatible via WB2 lexicon cross-check against GraphCastSmall input_coords
+
+**Why IFS**:
+- Provides all 83 GraphCastSmall input variables including tp06
+- Real-time operational data — no credentials required (ECMWF open data)
+- Verified compatible — IFS open data includes tp06 unlike its Aurora1p5 variant
+- Required for near-real-time production forecasts
+
+**Why NOT NCAR_ERA5**:
+- NCAR_ERA5 lexicon (verified) does NOT include `tp06`
+- GraphCastSmall requires tp06 as an initialization variable
+- NCAR_ERA5 cannot be used without custom variable bridging
 
 **Why NOT GFS**:
-Aurora1p5 requires 18 surface variables (INPUT_VARIABLES surface set):
-`msl, u10m, v10m, t2m, d2m, tcwv, tcc, u100m, v100m, sp, lcc, mcc, hcc, skt, stl1, swvl1, sic, sd`
+- GFS compatibility with GraphCastSmall has NOT been verified
+- The constitution (§II) explicitly states: "GFS is NOT a verified initialization source for GraphCastSmall"
+- Do not use GFS until compatibility is confirmed via lexicon audit
 
-GFS lexicon does NOT provide: `d2m` (dew point 2m), `u100m`, `v100m`, `lcc`, `mcc`, `hcc`, `skt`, `stl1`, `swvl1`, `sic`, `sd`.
-
-**IFS open-data limitation — Sea Ice Concentration (sic)**:
-From Aurora1p5 source (verified):
-> "The open-data IFS does not publish sea ice concentration (sic). earth2studio.data.NCAR_ERA5 or earth2studio.data.ARCO (which provide all required variables) may be used instead."
-
-**sic gap handling strategy**:
-Myanmar sits at 9°N–29°N. The initialization requires a globally-gridded `sic` field.
-For the tropical initialization region surrounding Myanmar, sea ice concentration is physically 0.
-For the global model field (required by Aurora for the full 720×1440 input):
-- **Option A (Recommended for MVP)**: Pad `sic` with climatological zero for non-polar regions; use ARCO/NCAR_ERA5 `sic` for polar grid cells. Documented in pipeline metadata.
-- **Option B**: Use NCAR_ERA5 (historical, full variable set) for development runs, IFS for near-real-time
-- **Option C**: Use ARCO as initialization (ERA5 historical, cloud-optimized, up to 2023)
-
-**Implementation decision**:
-- Production (real-time): `earth2studio.data.IFS` + sic patch from ARCO (or climatological 0)
-- Development/demo: `earth2studio.data.NCAR_ERA5` (full variable coverage, historical)
-
-**Access requirements**:
-- IFS open-data: No credentials required (ECMWF open data initiative)
-- NCAR_ERA5: Free via AWS (may incur transfer costs)
-- ARCO: Free via Google Cloud (zarr)
+**Two-timestep initialization requirement** (verified from Earth2Studio source):
+- GraphCastSmall requires TWO consecutive time steps as input: t−6h and t+0h
+- Both must be fetched from the initialization source before inference begins
+- This means a single `earth2studio.data.ARCO` or `IFS` fetch must cover both times
 
 ---
 
-### ADR-003: Precipitation — Aurora1p5 Native tp1h (No PrecipitationAFNO)
+### ADR-003: Precipitation — GraphCastSmall Native tp06 (No Transform)
 
-**Decision**: Use Aurora1p5's native `tp1h` output directly. PrecipitationAFNO/v2 is NOT used.
+**Decision**: Use GraphCastSmall's native `tp06` output directly. No log transform or diagnostic
+model is required. The only conversion is ×1000 to obtain mm/6h.
 
-**Why this is a significant change from the initial plan**:
-The initial plan assumed Aurora1p5 had no precipitation output and required PrecipitationAFNOv2 as a separate diagnostic model. This was incorrect.
+**What tp06 represents**:
+- 6-hour accumulated total precipitation
+- Produced natively by GraphCastSmall at each 6h lead time (t+6h, t+12h, t+18h, t+24h)
+- Units in raw model output: metres (physical space, not log space)
+- Conversion: metres × 1000 = mm per 6-hour accumulation period
 
-**Verified Aurora1p5 output variables** (from source code):
-- All 83 INPUT_VARIABLES (passed through)
-- 7 additional diagnostic outputs: `i10fg`, `blh`, `uvb1h`, `ssrd1h`, `ttr1h`, **`tp1h`**, `sf1h`
-- `tp1h` and `sf1h` require **log untransform** (`exp()`) before use
+**CRITICAL: No log/exp transform**:
+Unlike Aurora1p5's `tp1h` (which required `exp()` before use), GraphCastSmall's `tp06` is
+already in physical metres. Applying an exponential transform would be incorrect and produce
+wildly inflated values.
 
-**What tp1h represents**:
-- 1-hour accumulated total precipitation
-- Produced at each hourly lead time (t+1h, t+2h, ..., t+168h)
-- Units after log untransform + conversion: mm (per 1-hour accumulation period)
-- Display convention: mm/h, understood as "mm accumulated in this 1-hour period"
+**Physical constraint**:
+- tp06 MUST be non-negative (no negative precipitation)
+- Clamp any sub-zero values to 0.0 (numerical noise only)
+- Plausible range: 0–150 mm / 6h (extreme tropical threshold ~100 mm/6h)
 
-**PrecipitationAFNO status (for reference)**:
-- PrecipitationAFNO: Original version
-- PrecipitationAFNOv2: "Improved" version, labeled "Improved Precipitation AFNO diagnostic model"
-- Neither is deprecated in current docs
-- Neither is needed for this application
-
----
-
-### ADR-004: Temporal Resolution — Native Hourly (No Interpolation)
-
-**Decision**: Aurora1p5 produces genuine hourly output. No interpolation required or permitted.
-
-**Mechanism** (verified from source):
-Aurora1p5's 6-hour auto-regressive step internally produces intermediate hourly predictions.
-The `_forward_sub_steps` method iterates through `lead_time_hours=[1, 2, 3, 4, 5, 6]` per AR step,
-calling `model.forward()` at each hour without additional model evaluations.
-This produces 168 distinct model predictions (t+1h through t+168h) for a 7-day forecast.
-
-**Implication**: The constitution's §VI requirement for hourly navigation is satisfied by native
-model output. The initial plan's interpolation approach is obsolete and must NOT be implemented.
+**PrecipitationAFNO status**:
+Not required. GraphCastSmall natively outputs tp06. Do not chain a diagnostic precipitation
+model.
 
 ---
 
-### ADR-005: Precipitation Display — 1-Hour Accumulation
+### ADR-004: Temporal Resolution — Native 6h Steps (No Interpolation)
 
-**Decision**: Display precipitation as `mm/h` with clear disclosure that values represent
-1-hour accumulated totals, not instantaneous rates.
+**Decision**: GraphCastSmall produces one forecast step every 6 hours. The MVP covers a 24-hour
+horizon with 4 forecast steps plus the t+0h initialization frame = 5 total frames.
+
+**Native steps**: t+0h, t+6h, t+12h, t+18h, t+24h
+
+**Interpolation is PROHIBITED** (Constitution §VI):
+- Synthesizing intermediate hourly frames is forbidden
+- Only the 5 native 6h frames are displayed
+- Timeline slider steps in 6h increments
+
+**Lead time display**:
+- t+0h: initialization state (from analysis)
+- t+6h: "+6 h"
+- t+12h: "+12 h"
+- t+18h: "+18 h"
+- t+24h: "+24 h"
+
+---
+
+### ADR-005: Precipitation Display — 6-Hour Accumulation
+
+**Decision**: Display precipitation as mm / 6h with mandatory disclosure that values represent
+the total rainfall accumulated during the 6-hour forecast period ending at the displayed time.
 
 **Rationale**:
-- tp1h is a 1-hour accumulated precipitation variable
-- Displaying as mm/h is common meteorological convention for hourly accumulated precip
-- The UI MUST include a tooltip/info note: "mm/h = total precipitation accumulated over 1 hour"
-- No 6-hour accumulation period applies; this is not a PrecipitationAFNO output
-- No need for accumulation period display (e.g., "14:00–20:00 UTC") since each frame is 1-hour
+- tp06 is a 6-hour accumulated variable — NOT an instantaneous rate
+- Dividing by 6 to create an "mm/h" rate is PROHIBITED (Constitution §VI)
+- The UI MUST display a tooltip/info note: "Precipitation values represent total rainfall
+  accumulated during the 6-hour forecast period ending at the displayed time."
 
 ---
 
-### ADR-006: Forecast Data Format
+### ADR-006: Forecast Data Format — GraphCastSmall Dimensions
 
 **Decision**: Float32 binary arrays + `forecast.json` metadata.
 
@@ -134,156 +151,170 @@ model output. The initial plan's interpolation approach is obsolete and must NOT
 data/
 ├── demo/ or forecast/
 │   ├── forecast.json          # All metadata
-│   ├── temperature.bin        # [169 × 81 × 41] float32 (t+0h to t+168h)
-│   └── precipitation.bin      # [169 × 81 × 41] float32 (t+0h to t+168h)
+│   └── precipitation.bin      # [5 × 21 × 11] float32
 ```
 
-**Grid dimensions** (Myanmar 0.25° bbox):
-- lat: 9.0°N to 29.0°N → 81 points (29.0 - 9.0) / 0.25 + 1 = 81
-- lon: 92.0°E to 102.0°E → 41 points (102.0 - 92.0) / 0.25 + 1 = 41
-- times: 0h to 168h inclusive → 169 frames
+**Grid dimensions** (Myanmar 1.0° bbox):
+- lat: 9.0°N to 29.0°N → 21 points (step 1.0°)
+- lon: 92.0°E to 102.0°E → 11 points (step 1.0°)
+- times: t+0h to t+24h inclusive at 6h steps → 5 frames (indices 0, 1, 2, 3, 4)
 
-**Size estimate**: 169 × 81 × 41 × 4 bytes × 2 variables ≈ 4.5 MB total
+**Size estimate**: 5 × 21 × 11 × 4 bytes × 1 variable = 4,620 bytes ≈ 4.6 KB total
 
-**Note on t+0h**: The t+0h frame stores the initialization state (from GFS/IFS analysis data).
-Aurora1p5 starts producing forecasts at t+1h. The t+0h frame is included for reference continuity.
+**Note on t+0h**: The t+0h frame stores the initialization state from the analysis source.
+GraphCastSmall starts producing forecasts at t+6h. The t+0h frame is included for reference.
 
 ---
 
-## 2. Aurora1p5 Variable Specification (Verified)
+### ADR-007: Hardware Transparency and VRAM Staging
+
+**Decision**: VRAM requirements for GraphCastSmall on T4 (16 GB) MUST be established
+experimentally through a staged test protocol. Do NOT assume the 40 GB badge means 40 GB
+is strictly required.
+
+**Staged test protocol** (Constitution §XI):
+1. Measure GPU memory baseline after Colab/CUDA initialization
+2. Load GraphCastSmall weights and measure peak VRAM
+3. Run single-step inference (t−6h + t+0h → t+6h) and measure peak VRAM
+4. If step 3 succeeds: run full 24h forecast
+5. Report GPU type, total VRAM, and peak allocated VRAM at each stage
+
+If step 3 OOM: stop immediately, report, seek user approval for any alternative approach.
+
+---
+
+## 2. GraphCastSmall Variable Specification (Verified)
 
 ### Input Variables (83 total)
 
-**Atmospheric (65)** — z, q, t, u, v at 13 pressure levels:
-1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50 hPa
+Includes atmospheric variables at 13 pressure levels plus surface variables including:
+- `tp06` (6-hour total precipitation — required as initialization input)
+- Surface meteorological fields (temperature, wind, humidity, pressure, etc.)
+- Pressure-level fields at 13 levels
 
-**Surface (18)**:
-`msl, u10m, v10m, t2m, d2m, tcwv, tcc, u100m, v100m, sp, lcc, mcc, hcc, skt, stl1, swvl1, sic, sd`
+GraphCastSmall uses the WeatherBench2 (WB2) lexicon for variable mapping.
 
-### Output Variables (90 total)
+### Output Variables
 
-All 83 input variables + 7 diagnostic-only outputs:
-`i10fg` (instantaneous 10m wind gust), `blh` (boundary layer height),
-`uvb1h` (UV radiation 1h), `ssrd1h` (surface solar radiation 1h),
-`ttr1h` (top thermal radiation 1h), **`tp1h`** (total precipitation 1h),
-`sf1h` (snowfall 1h)
-
-Note: `tp1h` and `sf1h` are in **log space** in raw model output → must apply `exp()`.
+GraphCastSmall outputs the same 83 variables it ingests as input at the next 6h lead time.
+`tp06` is both an input (required for initialization) and an output (forecast).
 
 ### Variables used in frontend
 
-| Variable | Aurora name | Unit (raw) | Transformation | Frontend unit |
-|----------|------------|------------|---------------|---------------|
-| 2m temperature | `t2m` | K | subtract 273.15 | °C |
-| 1h precipitation | `tp1h` | log(m) | exp(), × 1000 | mm/h |
+| Variable | GraphCast name | Unit (raw output) | Transformation | Frontend unit |
+|----------|---------------|-------------------|---------------|---------------|
+| 6h precipitation | `tp06` | metres (physical) | × 1000 | mm / 6h |
+
+No temperature is displayed in the MVP. Frontend is precipitation-only.
 
 ---
 
-## 3. IFS Data Source Analysis
+## 3. Data Source Analysis
+
+### earth2studio.data.ARCO
+
+**Access**: Free via Google Cloud (zarr) — no credentials required
+**Coverage**: 1959–2023 (historical only)
+**Resolution**: 0.25° (upsampled to 1.0° by GraphCastSmall's Earth2Studio wrapper)
+**Variables**: Full ERA5 including tp06
+**Compatible with GraphCastSmall**: YES — all 83 required variables including tp06
+**Use case**: Development runs, historical validation, Colab notebook testing
 
 ### earth2studio.data.IFS
 
 **Access**: ECMWF open data — no credentials required
-**Endpoint**: ECMWF open data public S3/HTTPS
-**Resolution**: 0.25° lat-lon
-**Coverage**: Global
-**Update frequency**: 4× daily (00, 06, 12, 18 UTC), approximately 6h latency
-**Variables provided**: Full IFS variable set (surface + pressure levels)
-**Missing**: `sic` (sea ice concentration) — not published in ECMWF open data
-
-**Lexicon**: `earth2studio/lexicon/ecmwf.py` → `IFSLexicon`
+**Resolution**: 0.25°
+**Coverage**: Near-real-time (4× daily: 00, 06, 12, 18 UTC, ~6h latency)
+**Variables**: Full IFS variable set including tp06
+**Compatible with GraphCastSmall**: YES — all 83 required variables confirmed
+**Note**: Unlike the Aurora1p5 use case, IFS for GraphCastSmall does NOT have a sic gap
+  problem. GraphCastSmall's 83 input variables do not include sic.
+**Use case**: Near-real-time production forecasts
 
 ### earth2studio.data.NCAR_ERA5
 
-**Access**: Free via AWS Open Data (NCAR sponsorship program)
-**Coverage**: 1940 to present (near-real-time ERA5)
-**Resolution**: 0.25°
-**Variables**: Full ERA5 variable set including `sic`
-**Use case**: Development, historical validation, sic source for patching
+**Access**: Free via AWS Open Data
+**Coverage**: Historical + near-real-time
+**Compatible with GraphCastSmall**: NO — missing `tp06` in lexicon
+**Use case**: NOT suitable for GraphCastSmall initialization
 
-### earth2studio.data.ARCO
+### GFS
 
-**Access**: Free via Google Cloud (zarr)
-**Coverage**: 1959–2023 (historical only)
-**Resolution**: 0.25°
-**Variables**: Full ERA5 including `sic`
-**Use case**: Historical development runs only; NOT for real-time production
+**Compatible with GraphCastSmall**: UNVERIFIED — do not use
+**Constitution requirement**: Must be explicitly validated before use
 
 ---
 
-## 4. PrecipitationAFNO Reference (Not Used, But Documented)
-
-For reference if Aurora1p5 is ever replaced by a model without native precipitation:
-
-| Version | Description | Status |
-|---------|-------------|--------|
-| PrecipitationAFNO | Original AFNO precipitation diagnostic | Available |
-| PrecipitationAFNOv2 | "Improved Precipitation AFNO" | Available, current recommendation |
-| OrbitGlobalPrecip | Global precipitation downscaling (9.5m, 126m variants) | Available |
-
-If used in future: PrecipitationAFNOv2 requires 20 input variables including `r500`, `r850`, `tcwv`, `sp` — a variable gap that would require bridging from Aurora1p5 outputs.
-
----
-
-## 5. Pipeline Architecture (Final)
+## 4. Pipeline Architecture (Final)
 
 ```
-IFS open data (earth2studio.data.IFS)
-    ↓ [sic gap: patch from ARCO or pad with 0]
-Aurora1p5 (earth2studio.models.px.Aurora1p5)
-    │ Native hourly rollout: t+1h ... t+168h
-    │ 90 output variables per hour
+ARCO (earth2studio.data.ARCO) or IFS (earth2studio.data.IFS)
+    ↓ [fetch t-6h AND t+0h — two consecutive timesteps required]
+GraphCastSmall (earth2studio.models.px.GraphCastSmall)
+    │ Native 6h auto-regressive rollout: t+6h, t+12h, t+18h, t+24h
+    │ 83 output variables per step
     ↓
 ZarrBackend (earth2studio.io.ZarrBackend)
     ↓
 xarray post-processing:
-    ├── extract t2m → subtract 273.15 → °C
-    └── extract tp1h → exp() → × 1000 → mm/h
+    └── extract tp06 → × 1000 → mm / 6h (clamp to ≥ 0)
     ↓
-myanmar_subset.py: .sel(lat=slice(9,29), lon=slice(92,102))
+myanmar_subset: .sel(lat=slice(9,29), lon=slice(92,102))
     ↓
-artifact_writer.py: Float32 binary + forecast.json
+artifact_writer: Float32 binary [5 × 21 × 11] + forecast.json
     ↓
 data/forecast/ (or data/demo/)
 ```
 
-**No interpolation. No PrecipitationAFNO. No derived variable bridging.**
+**No log transform. No diagnostic precipitation model. No sic patching. No interpolation.**
 
 ---
 
-## 6. Model Weights and Licensing
+## 5. Model Weights and Licensing
 
-**Aurora1p5 weights**:
-- HuggingFace: `hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab`
-- Deterministic: `aurora-0.25-v1.5.ckpt`
-- Statics: `aurora-0.25-v1.5-static.pickle`
-- License: Microsoft Research License (check HuggingFace repository for current terms)
-- Download: Handled automatically by `Aurora1p5.load_default_package()`
+**GraphCastSmall weights**:
+- Package source: `gs://dm_graphcast/graphcast`
+- Checkpoint: `params/GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz`
+- Download: Handled automatically by `GraphCastSmall.load_default_package()`
+- License: DeepMind/Google license — check GCS terms for current conditions
+
+**ARCO / ERA5 data**:
+- ERA5: Copernicus Climate Data Store license (see ECMWF terms)
+- ARCO mirror: Free via Google Cloud
 
 **IFS open data**:
-- ECMWF open data license (Creative Commons-compatible, check ECMWF terms for current version)
-- No commercial redistribution of raw analysis data without attribution
+- ECMWF open data license (Creative Commons-compatible; check ECMWF terms)
 
 **No secrets, tokens, or API keys are required for the MVP data path.**
 
 ---
 
-## 7. Relevant Examples
+## 6. Relevant Examples
 
 - Deterministic workflow: https://nvidia.github.io/earth2studio/examples/01_getting_started/01_deterministic_workflow.html
-- Diagnostic workflow: https://nvidia.github.io/earth2studio/examples/01_getting_started/02_diagnostic_workflow.html
-- No Aurora1p5-specific example exists in the current gallery
+- GraphCast example (if available): check https://nvidia.github.io/earth2studio/examples/
 
 ---
 
-## 8. Summary: What Changed from Initial Plan
+## 7. Summary: What Changed from Aurora1p5
 
-| Item | Initial Plan | Corrected Plan |
-|------|-------------|----------------|
-| Initialization source | GFS (free) | IFS (free, but sic gap to handle) |
-| Precipitation model | PrecipitationAFNOv2 (separate) | Aurora1p5 native tp1h |
-| Temporal resolution | 6h native → linear interp to 1h | Native 1h (no interpolation) |
-| Precip units | mm/h (divided from 6h accum) | mm/h (1-hour accumulation, genuine) |
-| Variable bridging | DerivedRH + DerivedTCWV needed | Not needed |
-| Pipeline complexity | High | Significantly reduced |
-| VRAM needed | 48GB (Aurora) + 40GB (PrecipAFNO) | 48GB (Aurora1p5 only) |
+| Item | Aurora1p5 | GraphCastSmall |
+|------|-----------|----------------|
+| Resolution | 0.25° | 1.0° |
+| Native timestep | 1h | 6h |
+| Forecast horizon | 168h (7 days) | 24h |
+| Total frames | 169 | 5 |
+| Myanmar grid | 81 × 41 | 21 × 11 |
+| Precipitation variable | tp1h | tp06 |
+| Precipitation transform | exp() × 1000 (log untransform) | × 1000 only (no log) |
+| Precipitation unit | mm / 1h | mm / 6h |
+| Precipitation accumulation | 1-hour | 6-hour |
+| Sea ice gap (sic) | YES — IFS missing sic, must patch | NO — sic not required by GraphCastSmall |
+| Init timesteps required | 1 (t+0h only) | 2 (t-6h AND t+0h) |
+| Compatible init sources | IFS (with sic patch), NCAR_ERA5, ARCO | ARCO, IFS — NOT NCAR_ERA5 (missing tp06) |
+| Backend | PyTorch | JAX + Haiku |
+| Rec VRAM | 48 GB | 40 GB (T4 16 GB unverified) |
+| Temperature output | YES (t2m, displayed) | Not displayed in MVP |
+| Variable switcher | YES (temp + precip) | NO (precip only) |
+| Pipeline complexity | Higher (sic patch, log untransform) | Lower |
+| Payload size | ~4.3 MB | ~4.6 KB |

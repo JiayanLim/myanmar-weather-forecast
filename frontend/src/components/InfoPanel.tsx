@@ -51,12 +51,13 @@ export function InfoPanel() {
 
             <div className="grid grid-cols-2 gap-3">
               <Row label="Model" value={`${metadata.model} ${metadata.model_version}`} />
-              <Row label="Model resolution" value={`${metadata.spatial_resolution_deg}° (~28 km)`} />
+              <Row label="Model resolution" value={`${metadata.spatial_resolution_deg}° (~111 km)`} />
               {metadata.display_resolution_deg != null && (
-                <Row label="Display resolution" value={`${metadata.display_resolution_deg}° (~5.5 km) — interpolated`} />
+                <Row label="Display resolution" value={`${metadata.display_resolution_deg}° — interpolated`} />
               )}
               <Row label="Initialization" value={metadata.initialization_source} />
-              <Row label="Horizon" value={`${metadata.forecast_horizon_hours}h (2 days)`} />
+              <Row label="Horizon" value={`${metadata.forecast_horizon_hours}h`} />
+              <Row label="Timestep" value={`${metadata.native_timestep_hours}h`} />
               <Row label="Init time" value={formatDt(metadata.initialization_time)} />
               <Row label="Generated" value={formatDt(metadata.forecast_generated_at)} />
               {metadata.inference_config && (
@@ -86,11 +87,6 @@ export function InfoPanel() {
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Initialization Data</h3>
               <p className="text-xs text-slate-400">{metadata.data_source_attribution}</p>
-              {metadata.sic_handling && (
-                <p className="text-xs text-slate-500">
-                  <span className="text-slate-400">Sea ice handling: </span>{metadata.sic_handling}
-                </p>
-              )}
             </div>
 
             <hr className="border-wx-border" />
@@ -98,10 +94,10 @@ export function InfoPanel() {
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Limitations</h3>
               <ul className="text-[11px] text-slate-400 list-disc list-inside space-y-1">
-                <li>The 0.25° model grid (~28 km) represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
-                <li>The display uses bilinear interpolation to 0.05° for visual clarity. This does not add forecast information beyond the native 0.25° model resolution.</li>
-                <li>Forecast skill degrades significantly beyond 3–5 days.</li>
-                <li>Precipitation represents total accumulation during the indicated 1-hour forecast period, not an instantaneous rainfall rate.</li>
+                <li>The {metadata.spatial_resolution_deg}° model grid (~111 km) represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
+                <li>The display uses bilinear interpolation to 0.05° for visual clarity. This does not add forecast information beyond the native {metadata.spatial_resolution_deg}° model resolution.</li>
+                <li>Forecast skill degrades within the 24-hour window for rapidly evolving convective systems.</li>
+                <li>Precipitation represents total accumulation during the indicated 6-hour forecast period, not an instantaneous rainfall rate.</li>
                 {metadata.is_demo && (
                   <li className="text-amber-400">This is <strong>synthetic demo data</strong> — not a real weather forecast. Do not use for any decision-making.</li>
                 )}

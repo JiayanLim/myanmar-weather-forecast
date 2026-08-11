@@ -55,19 +55,19 @@ export const TEMP_LUT = buildLUT([
   { pos: 1.00, r: 165, g: 0,   b: 38  }, // 40°C  dark red
 ]);
 
-// Precipitation: transparent-white -> cyan -> blue -> green -> yellow -> red (0 to 30+ mm / 1-hour accumulation)
+// Precipitation: transparent-white -> cyan -> blue -> green -> yellow -> red (0 to 100+ mm / 6h accumulation)
 export const PRECIP_MIN = 0;
-export const PRECIP_MAX = 30;
+export const PRECIP_MAX = 100;
 export const PRECIP_LUT = buildLUT([
   { pos: 0.00, r: 255, g: 255, b: 255 }, // 0       white (near transparent)
-  { pos: 0.03, r: 200, g: 230, b: 255 }, // 0.9     pale blue
-  { pos: 0.10, r: 100, g: 190, b: 255 }, // 3       sky blue
-  { pos: 0.20, r: 30,  g: 130, b: 255 }, // 6       blue
-  { pos: 0.35, r: 0,   g: 200, b: 150 }, // 10.5    teal-green
-  { pos: 0.55, r: 50,  g: 220, b: 50  }, // 16.5    green
-  { pos: 0.75, r: 255, g: 220, b: 0   }, // 22.5    yellow
-  { pos: 0.90, r: 255, g: 120, b: 0   }, // 27      orange
-  { pos: 1.00, r: 200, g: 0,   b: 0   }, // 30+     red
+  { pos: 0.03, r: 200, g: 230, b: 255 }, // 3       pale blue
+  { pos: 0.10, r: 100, g: 190, b: 255 }, // 10      sky blue
+  { pos: 0.20, r: 30,  g: 130, b: 255 }, // 20      blue
+  { pos: 0.35, r: 0,   g: 200, b: 150 }, // 35      teal-green
+  { pos: 0.55, r: 50,  g: 220, b: 50  }, // 55      green
+  { pos: 0.75, r: 255, g: 220, b: 0   }, // 75      yellow
+  { pos: 0.90, r: 255, g: 120, b: 0   }, // 90      orange
+  { pos: 1.00, r: 200, g: 0,   b: 0   }, // 100+    red
 ]);
 
 // Modify PRECIP_LUT so values near 0 are mostly transparent
@@ -111,13 +111,13 @@ export function applyColorscale(
 }
 
 export const TEMP_TICKS = [15, 20, 25, 30, 35, 40];
-export const PRECIP_TICKS = [0, 1, 3, 6, 10, 20, 30];
+export const PRECIP_TICKS = [0, 5, 10, 20, 40, 60, 100];
 
-const MODEL_STEP = 0.25;
+const MODEL_STEP = 1.0;
 
 /**
  * Render weather data at display resolution (0.05°) using bilinear interpolation
- * from the model grid (0.25°), with optional Myanmar boundary masking.
+ * from the model grid (1.0°), with optional Myanmar boundary masking.
  *
  * Model data layout: frame[latIdx * nLonSrc + lonIdx]
  *   latIdx 0 = 9°N (south), latIdx nLatSrc-1 = 29°N (north)

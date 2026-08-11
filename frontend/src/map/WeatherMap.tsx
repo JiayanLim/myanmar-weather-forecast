@@ -142,7 +142,7 @@ export function WeatherMap() {
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.putImageData(
-        new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), n_lon, n_lat),
+        new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), DISPLAY_N_LON, DISPLAY_N_LAT),
         0, 0,
       );
     }
@@ -184,8 +184,9 @@ export function WeatherMap() {
       const dt = new Date(validTime);
       const timeStr = dt.toUTCString().replace(' GMT', ' UTC');
 
-      const leadH = currentHour;
-      const endDt = new Date(dt.getTime() + 3_600_000);
+      const stepHours = metadata.native_timestep_hours ?? 6;
+      const leadH = currentHour * stepHours;
+      const endDt = new Date(dt.getTime() + stepHours * 3_600_000);
       const startStr = `${dt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
       const endStr = `${endDt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
 
@@ -198,7 +199,7 @@ export function WeatherMap() {
             <span class="wx-popup-value">${isNaN(precip) ? '—' : precip.toFixed(2)} mm</span>
           </div>
           <div class="wx-popup-sub">Accumulation: ${startStr}–${endStr}</div>
-          <div class="wx-popup-note">1-hour accumulated total · not an instantaneous rate</div>
+          <div class="wx-popup-note">6-hour accumulated total · not an instantaneous rate</div>
           <div class="wx-popup-coords">${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E · +${leadH}h lead</div>
         </div>`;
     }

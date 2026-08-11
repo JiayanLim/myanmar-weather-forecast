@@ -1,47 +1,72 @@
 """
-generate_forecast.py — Aurora1p5 + IFS 48-hour Myanmar precipitation forecast.
+generate_forecast.py — GraphCastSmall Myanmar 24-hour precipitation forecast.
 
-Requires:
-  - earth2studio >= 0.17.0 with --extra data --extra aurora installed
-  - IFS open data accessible (ECMWF; Google Cloud mirror default, no credentials)
-  - GPU: CUDA T4 (16 GB) or better
+Model: earth2studio.models.px.GraphCastSmall
+  Resolution : 1.0° global (181 × 360 lat-lon grid, pole-inclusive)
+  Timestep   : 6h per auto-regressive step
+  Backend    : JAX + Haiku (DeepMind GraphCast wrapped by Earth2Studio)
+  Checkpoint : gs://dm_graphcast/graphcast
+               params/GraphCast_small - ERA5 1979-2015 - resolution 1.0 -
+               pressure levels 13 - mesh 2to5 - precipitation input and output.npz
 
-Usage:
-    uv run python scripts/generate_forecast.py \
-        [--init-time YYYY-MM-DDTHH:MM:SSZ]   # defaults to latest IFS 00Z
-        [--output-dir data/forecast/] \
-        [--n-hours 48] \
-        [--ifs-source google|aws|ecmwf] \
-        [--debug]
+Initialization (two-timestep requirement — verified from input_coords):
+  GraphCastSmall.input_coords["lead_time"] = [−6h, 0h]
+  Both t−6h and t+0h must be fetched from the data source before inference.
+  Earth2Studio handles this automatically when data source is passed to
+  e2run.deterministic().
 
-IFS variables patched (not available in IFS open data):
-    sic  — zero globally (no sea ice; valid for tropical Myanmar init)
-    lcc  — zero (IFS open data provides tcc but not individual cloud layer fractions)
-    mcc  — zero (same)
-    hcc  — zero (same)
+  --source arco  (default) — ARCO ERA5 reanalysis, 1959–2023, no credentials,
+                             all 83 GraphCastSmall input variables including tp06
+  --source ifs              — IFS HRES open data, near-real-time, no credentials,
+                             all 83 GraphCastSmall input variables including tp06
 
-Aurora receives its full required input state. Only tp1h is stored to disk;
-temperature is not written (display-only reduction, not model input reduction).
+  NOT compatible: NCAR_ERA5 (missing tp06 in lexicon), GFS (unverified)
 
-tp1h post-processing:
-    Aurora raw output -> Earth2Studio inverse log transform -> physical metres in zarr -> x1000 -> mm / 1h
-
-    Earth2Studio's aurora1p5.py applies aurora_log_untransform() before yielding,
-    converting Aurora's internal scaled_tp_1h (log-space) to physical metres.
-    So zarr["tp1h"] stores physical metres directly.
-    Physical quantity: zarr_metres * 1000 -> mm / 1-hour accumulation
-    Negative values (numerical noise) are clamped to 0.
-    A configurable sanity threshold (--precip-max-mm) warns if the max exceeds a physical
-    upper bound. The data is never silently modified by this check.
-
-T4 memory optimisations (applied automatically on CUDA):
-    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (reduces fragmentation)
-    - Model converted to bfloat16 (~2.5 GB vs ~5 GB for 1.26B params)
-    - torch.inference_mode() wraps inference (no gradient bookkeeping)
+Precipitation (tp06):
+  tp06 is native GraphCastSmall output — physical metres, NO log transform.
+  This is NOT Aurora's tp1h which required exp() before use.
+  Conversion  : tp06_metres × 1000 = mm / 6-hour accumulation
+  Semantics   : total precipitation accumulated over the 6h period ending at
+                the forecast valid time. Not an instantaneous rate.
+  Physical constraint: clamp to ≥ 0 (no negative precipitation).
 
 Output:
-    data/forecast/forecast.json
-    data/forecast/precipitation.bin — float32 [n_times, n_lat, n_lon] C-order
+  data/forecast/
+    precipitation.bin  — float32 [5 × 21 × 11] C-order (t+0h .. t+24h, step 6h)
+    forecast.json      — complete provenance metadata (schema v2.0)
+
+Myanmar grid at 1.0°:
+  lat : 9°N to 29°N → 21 points (1° spacing, ascending south-to-north)
+  lon : 92°E to 102°E → 11 points (1° spacing)
+
+Inference runs globally; only the output is subset to Myanmar.
+GraphCastSmall requires a full 181×360 global input — never crop model inputs.
+
+T4 VRAM staged test (Constitution §XI):
+  Documented badge: "gpu:40gb". T4 has 16 GB. Compatibility is unverified.
+  This script performs a staged test before the full run:
+    Stage 1 — GPU baseline (before model load)
+    Stage 2 — Model loaded (after weights downloaded to JAX)
+    Stage 3 — Single 6h inference step (smoke test)
+    Stage 4 — Full 24h forecast (4 steps) if Stage 3 passes
+
+  On OOM at any stage: print a structured report and exit with code 1.
+  The data is never silently modified or substituted with demo values.
+
+Usage:
+    uv run python scripts/generate_forecast.py \\
+        --source arco \\
+        --init-time 2022-01-01T00:00:00Z \\
+        [--output-dir data/forecast/] \\
+        [--smoke-test-only] \\
+        [--precip-max-mm 500] \\
+        [--debug]
+
+Note on JAX GPU memory:
+  GraphCastSmall's GPU compute is managed by JAX, not PyTorch's CUDA allocator.
+  torch.cuda.memory_allocated() reflects only PyTorch's data-transport tensors.
+  JAX pre-allocates its own memory pool. Set XLA_PYTHON_CLIENT_PREALLOCATE=false
+  (done below) to prevent JAX from reserving all available GPU memory up-front.
 """
 
 from __future__ import annotations
@@ -54,132 +79,152 @@ import time as time_module
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Must be set before torch is imported to take effect
+# ── Environment variables ────────────────────────────────────────────────────
+# Must be set before any JAX or Earth2Studio imports to take effect.
+
+# Prevent JAX from pre-allocating ~90% of GPU memory on first use.
+# Without this, JAX grabs most VRAM before any PyTorch allocations,
+# making VRAM budgeting unpredictable on a 16 GB T4.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+# Cap JAX's GPU memory fraction. 0.85 leaves ~2.4 GB for PyTorch tensors on a T4.
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
+# PyTorch: reduce fragmentation in the data-transport tensor allocator.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import xarray as xr
 
-MYANMAR_LAT_MIN, MYANMAR_LAT_MAX = 9.0, 29.0
-MYANMAR_LON_MIN, MYANMAR_LON_MAX = 92.0, 102.0
+# ── Myanmar spatial constants ─────────────────────────────────────────────────
+MYANMAR_LAT_MIN = 9.0
+MYANMAR_LAT_MAX = 29.0
+MYANMAR_LON_MIN = 92.0
+MYANMAR_LON_MAX = 102.0
 
-# Variables required by Aurora1p5 that are NOT in IFS open data (patched to zero)
-IFS_PATCH_VARS = {
-    "sic": "zero",   # Sea ice concentration: 0 globally (no sea ice, tropical init)
-    "lcc": "zero",   # Low cloud cover: 0 (IFS open data only has tcc)
-    "mcc": "zero",   # Medium cloud cover: 0 (same)
-    "hcc": "zero",   # High cloud cover: 0 (same)
-}
+# ── GraphCastSmall temporal constants (verified from source) ──────────────────
+GC_STEP_HOURS = 6          # Native AR step — each call produces +6h
+GC_HORIZON_HOURS = 24      # MVP horizon
+GC_N_STEPS = GC_HORIZON_HOURS // GC_STEP_HOURS   # 4 AR steps
+GC_N_FRAMES = GC_N_STEPS + 1                      # 5 total frames (t+0 .. t+24)
+
+# Myanmar grid at 1.0° resolution
+GC_N_LAT = 21  # 9°N to 29°N inclusive (step 1°)
+GC_N_LON = 11  # 92°E to 102°E inclusive (step 1°)
+
+# Default physical sanity threshold for tp06 in mm / 6h.
+# Extreme tropical 6-hour rainfall records are ~300–400 mm; 500 mm is a conservative
+# upper bound that should never be exceeded in a valid GraphCastSmall output.
+DEFAULT_PRECIP_MAX_MM = 500.0
 
 
-def make_ifs_with_patches(source: str = "google"):
+# ── VRAM utilities ────────────────────────────────────────────────────────────
+
+def _torch_vram_gb() -> tuple[float, float]:
+    """Return (allocated_gb, reserved_gb) from PyTorch's CUDA allocator.
+    Returns (0, 0) on CPU or if torch is not imported yet.
+    Note: JAX manages its own separate memory pool not reflected here.
     """
-    Return a DataSource-compatible callable wrapping IFS with patches for
-    the 4 variables not available in IFS open data.
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return 0.0, 0.0
+        return (
+            torch.cuda.memory_allocated() / 1e9,
+            torch.cuda.memory_reserved() / 1e9,
+        )
+    except Exception:
+        return 0.0, 0.0
 
-    Complies with earth2studio DataSource protocol:
-      __call__(time, variable) -> xr.DataArray [time, variable, lat, lon]
+
+def _jax_vram_gb() -> float | None:
+    """Attempt to read JAX GPU memory usage in GB. Returns None if unavailable."""
+    try:
+        import jax
+        devices = jax.devices("gpu")
+        if not devices:
+            return None
+        stats = devices[0].memory_stats()
+        if stats is None:
+            return None
+        return stats.get("bytes_in_use", 0) / 1e9
+    except Exception:
+        return None
+
+
+def print_vram_report(label: str) -> None:
+    """Print a VRAM usage snapshot to stdout."""
+    torch_alloc, torch_res = _torch_vram_gb()
+    jax_used = _jax_vram_gb()
+    print(f"  [{label}]")
+    print(f"    PyTorch allocated : {torch_alloc:.2f} GB  reserved: {torch_res:.2f} GB")
+    if jax_used is not None:
+        print(f"    JAX bytes_in_use  : {jax_used:.2f} GB")
+    else:
+        print(f"    JAX bytes_in_use  : (not available — JAX GPU memory pool is opaque)")
+
+
+# ── Precipitation sanity check ────────────────────────────────────────────────
+
+def check_precipitation_sanity(tp06: np.ndarray, sanity_max_mm: float) -> bool:
     """
-    from earth2studio.data import IFS as IFSBase
+    Print a structured sanity report for the tp06 array and return True if PASS.
 
-    ifs_base = IFSBase(source=source)
+    tp06 units entering this function: mm / 6h accumulation (after ×1000 conversion).
 
-    class IFSWithPatches:
-        def __call__(self, time, variable):
-            var_list = [variable] if isinstance(variable, str) else list(variable)
-            patch_vars = [v for v in var_list if v in IFS_PATCH_VARS]
-            ifs_vars = [v for v in var_list if v not in IFS_PATCH_VARS]
+    Checks (never modifies the array):
+      - No NaN values
+      - No infinite values
+      - All values ≥ 0 (physical constraint: precipitation cannot be negative)
+      - Max ≤ sanity_max_mm (configurable physical upper bound)
 
-            if ifs_vars:
-                da = ifs_base(time, ifs_vars)
-            else:
-                # Only patch vars requested — fetch t2m to get grid shape
-                ref = ifs_base(time, ["t2m"])
-                da = ref.isel(variable=slice(0, 0))
-
-            if patch_vars:
-                lat = da.coords["lat"].values
-                lon = da.coords["lon"].values
-                zeros = np.zeros(
-                    (len(da.coords["time"]), len(patch_vars), len(lat), len(lon)),
-                    dtype=np.float32,
-                )
-                patch_da = xr.DataArray(
-                    zeros,
-                    dims=["time", "variable", "lat", "lon"],
-                    coords={
-                        "time": da.coords["time"],
-                        "variable": patch_vars,
-                        "lat": lat,
-                        "lon": lon,
-                    },
-                )
-                if ifs_vars:
-                    da = xr.concat([da, patch_da], dim="variable")
-                    da = da.sel(variable=var_list)
-                else:
-                    da = patch_da
-
-            return da
-
-    return IFSWithPatches()
-
-
-def check_precipitation_sanity(tp1h: np.ndarray, sanity_max_mm: float) -> bool:
+    Returns True on PASS, False on any FAIL.
     """
-    Print a structured sanity report for the precipitation array and return True if PASS.
+    n_nan = int(np.sum(np.isnan(tp06)))
+    n_inf = int(np.sum(np.isinf(tp06)))
+    n_neg = int(np.sum(tp06 < 0.0))
+    n_zero = int(np.sum(tp06 == 0.0))
+    n_total = tp06.size
 
-    Checks:
-      - min >= 0 (no negative precipitation)
-      - no NaN values
-      - no infinite values
-      - max <= sanity_max_mm threshold
-
-    The array is never modified. If the threshold is exceeded a WARNING is printed
-    and False is returned so the caller can decide how to proceed.
-    """
-    n_nan = int(np.sum(np.isnan(tp1h)))
-    n_inf = int(np.sum(np.isinf(tp1h)))
-    n_neg = int(np.sum(tp1h < 0.0))
-    n_zero = int(np.sum(tp1h == 0.0))
-    n_total = tp1h.size
-
-    tp1h_valid = tp1h[np.isfinite(tp1h)]
-    vmin = float(tp1h_valid.min()) if tp1h_valid.size else float("nan")
-    vmax = float(tp1h_valid.max()) if tp1h_valid.size else float("nan")
-    vmedian = float(np.median(tp1h_valid)) if tp1h_valid.size else float("nan")
-    p95 = float(np.percentile(tp1h_valid, 95)) if tp1h_valid.size else float("nan")
-    p99 = float(np.percentile(tp1h_valid, 99)) if tp1h_valid.size else float("nan")
+    valid = tp06[np.isfinite(tp06)]
+    vmin    = float(valid.min())    if valid.size else float("nan")
+    vmax    = float(valid.max())    if valid.size else float("nan")
+    vmedian = float(np.median(valid)) if valid.size else float("nan")
+    p95     = float(np.percentile(valid, 95)) if valid.size else float("nan")
+    p99     = float(np.percentile(valid, 99)) if valid.size else float("nan")
     zero_frac = n_zero / n_total * 100.0
 
     print()
-    print("  PRECIPITATION SANITY CHECK")
-    print("  " + "-" * 38)
-    print(f"  Unit              : mm / 1h accumulation")
+    print("  PRECIPITATION SANITY CHECK (tp06)")
+    print("  " + "-" * 42)
+    print(f"  Variable          : tp06 (GraphCastSmall native output)")
+    print(f"  Unit              : mm / 6h accumulation")
+    print(f"  Accumulation      : 6-hour total, ending at forecast valid time")
+    print(f"  Transform applied : metres × 1000 (NO exp/log transform)")
+    print(f"  Shape             : {tp06.shape}")
     print(f"  Min               : {vmin:.4f} mm")
     print(f"  Median            : {vmedian:.4f} mm")
     print(f"  P95               : {p95:.4f} mm")
     print(f"  P99               : {p99:.4f} mm")
     print(f"  Max               : {vmax:.4f} mm")
-    print(f"  Zero-rain fraction: {zero_frac:.1f}%")
+    print(f"  Zero-rain fraction: {zero_frac:.1f}%  (includes synthetic t+0h zero frame)")
 
     failures = []
     if n_nan > 0:
-        failures.append(f"NaN values: {n_nan}")
+        failures.append(f"NaN values: {n_nan} (check data source / model)")
     if n_inf > 0:
         failures.append(f"Infinite values: {n_inf}")
     if n_neg > 0:
-        failures.append(f"Negative values: {n_neg}")
+        failures.append(f"Negative values after clamping: {n_neg} (clamping is active — this should not happen)")
     if not np.isnan(vmax) and vmax > sanity_max_mm:
         failures.append(
-            f"Max {vmax:.2f} mm exceeds physical sanity threshold {sanity_max_mm:.0f} mm "
-            f"(check transformation pipeline)"
+            f"Max {vmax:.2f} mm/6h exceeds physical sanity threshold {sanity_max_mm:.0f} mm/6h. "
+            f"Extreme tropical 6h rainfall records are ~300–400 mm/6h. "
+            f"If this is a valid intense convective event, increase --precip-max-mm."
         )
 
     if failures:
         print(f"  Status            : FAIL")
         for msg in failures:
-            print(f"    WARNING: {msg}")
+            print(f"    FAIL: {msg}")
         print()
         return False
 
@@ -188,226 +233,346 @@ def check_precipitation_sanity(tp1h: np.ndarray, sanity_max_mm: float) -> bool:
     return True
 
 
+# ── Initialization time utilities ─────────────────────────────────────────────
+
 def find_latest_ifs_init() -> datetime:
-    """Return the most recent IFS analysis available on the open data portal.
-    IFS runs at 00Z and 12Z; data is available with ~6h delay.
+    """Return the most recent IFS HRES analysis time likely available on open data.
+    IFS publishes 00Z and 12Z runs with ~6h latency.
     """
     now = datetime.now(timezone.utc)
-    # Try 00Z and 12Z of today and yesterday in reverse order
     candidates = []
     for delta_days in [0, 1, 2]:
         day = now - timedelta(days=delta_days)
         for hour in [12, 0]:
             candidates.append(day.replace(hour=hour, minute=0, second=0, microsecond=0))
-
-    # Return the most recent that's at least 6h in the past
     for t in candidates:
         if (now - t).total_seconds() >= 6 * 3600:
             return t
-
-    # Fallback: yesterday 00Z
     return (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
 def run_pipeline(
     init_time: datetime,
-    n_hours: int,
+    source: str,
     output_dir: Path,
-    ifs_source: str,
+    smoke_test_only: bool,
     debug: bool,
-    sanity_max_mm: float = 300.0,
+    sanity_max_mm: float,
 ) -> int:
+    """
+    Run the GraphCastSmall 24h Myanmar precipitation forecast pipeline.
+
+    Returns 0 on success, 1 on error.
+    """
     import torch
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    t_start = time_module.time()
-
-    print("=" * 60)
-    print("Aurora1p5 + IFS Forecast Pipeline")
-    print(f"Init time  : {init_time.isoformat()}")
-    print(f"Horizon    : {n_hours}h ({n_hours // 24} days)")
-    print(f"Output dir : {output_dir.resolve()}")
-    print(f"IFS source : {ifs_source}")
-    print(f"Patched    : {list(IFS_PATCH_VARS.keys())}")
-    print("=" * 60)
-
-    # ------------------------------------------------------------------ #
-    # Step 1: Device selection
-    # ------------------------------------------------------------------ #
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        gpu_name = torch.cuda.get_device_name(0)
-        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-        device_desc = f"CUDA — {gpu_name} ({vram_gb:.0f} GB VRAM)"
-    else:
-        device = torch.device("cpu")
-        device_desc = "CPU (very slow)"
-        vram_gb = 0.0
-
-    print(f"\n[1/5] Device: {device_desc}")
-
-    # ------------------------------------------------------------------ #
-    # Step 2: IFS data source
-    # ------------------------------------------------------------------ #
-    print(f"\n[2/5] Initializing IFS data source (source={ifs_source})...")
-    ifs = make_ifs_with_patches(ifs_source)
-    sic_handling = (
-        "sic set to 0.0 globally — IFS open data does not publish sic. "
-        "Zero is physically correct for tropical Myanmar initialization. "
-        f"Also patched lcc/mcc/hcc to 0.0 (IFS provides tcc but not individual layer fractions)."
-    )
-    print(f"  Patch variables: {list(IFS_PATCH_VARS.keys())} → zero-filled")
-
-    # Quick connectivity test
-    print(f"  Testing IFS connectivity...")
-    try:
-        test = ifs(init_time, ["t2m"])
-        t2m_mean = float(test.sel(variable="t2m").mean()) - 273.15
-        print(f"  IFS OK — t2m global mean: {t2m_mean:.1f}°C")
-    except Exception as e:
-        print(f"  ERROR: IFS connectivity failed: {e}")
-        return 1
-
-    # ------------------------------------------------------------------ #
-    # Step 3: Load Aurora1p5
-    # ------------------------------------------------------------------ #
     import earth2studio.run as e2run
     from earth2studio.io import ZarrBackend
-    from earth2studio.models.px import Aurora1p5
+    from earth2studio.models.px import GraphCastSmall
 
-    print(f"\n[3/5] Loading Aurora1p5 (1.26B params)...")
-    t1 = time_module.time()
-    try:
-        package = Aurora1p5.load_default_package()
-        model = Aurora1p5.load_model(package)
-        print(f"  Model loaded in {time_module.time()-t1:.1f}s")
-        print(f"  Checkpoint: aurora-0.25-v1.5.ckpt")
-    except Exception as e:
-        print(f"  ERROR: Aurora1p5 load failed: {e}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    t_pipeline_start = time_module.time()
+
+    print("=" * 64)
+    print("GraphCastSmall Myanmar Forecast Pipeline")
+    print(f"  Init time    : {init_time.isoformat()}")
+    print(f"  Source       : {source.upper()}")
+    print(f"  Horizon      : {GC_HORIZON_HOURS}h ({GC_N_STEPS} steps × {GC_STEP_HOURS}h)")
+    print(f"  Frames       : {GC_N_FRAMES} total (t+0h through t+{GC_HORIZON_HOURS}h)")
+    print(f"  Myanmar grid : {GC_N_LAT} lat × {GC_N_LON} lon at 1.0°")
+    print(f"  Output       : {output_dir.resolve()}")
+    print(f"  Smoke only   : {smoke_test_only}")
+    print("=" * 64)
+
+    # ── Stage 1: Device detection ─────────────────────────────────────────────
+    print("\n[STAGE 1/4] GPU detection and VRAM baseline")
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        props = torch.cuda.get_device_properties(0)
+        gpu_name = props.name
+        vram_total_gb = props.total_memory / 1e9
+        device_label = f"{gpu_name} ({vram_total_gb:.0f} GB VRAM)"
+        print(f"  GPU    : {gpu_name}")
+        print(f"  VRAM   : {vram_total_gb:.1f} GB total")
+        if vram_total_gb < 16.0:
+            print(f"  WARNING: Less than 16 GB VRAM. GraphCastSmall (Rec 40 GB) may OOM.")
+        elif vram_total_gb < 40.0:
+            print(f"  NOTE: {vram_total_gb:.0f} GB < 40 GB Rec VRAM badge. "
+                  f"T4 compatibility is unverified — proceeding with staged test.")
+    else:
+        device = torch.device("cpu")
+        gpu_name = "CPU"
+        vram_total_gb = 0.0
+        device_label = "CPU (no GPU — inference will be very slow)"
+        print(f"  WARNING: No CUDA GPU detected. Running on {device_label}.")
+
+    print_vram_report("baseline — before model load")
+
+    # ── Stage 2: Data source ──────────────────────────────────────────────────
+    print(f"\n[STAGE 2/4] Initializing {source.upper()} data source")
+
+    if source == "arco":
+        from earth2studio.data import ARCO
+        data = ARCO()
+        source_label = "ARCO ERA5 reanalysis (Google Cloud, no credentials)"
+        source_attribution = (
+            "ERA5 via ARCO (Analysis-Ready Cloud-Optimized ERA5). "
+            "Hosted on Google Cloud. ERA5 © ECMWF/Copernicus."
+        )
+        print(f"  Source: {source_label}")
+        print(f"  Note: ARCO covers 1959–2023. Init time must be within this range.")
+    elif source == "ifs":
+        from earth2studio.data import IFS
+        data = IFS()
+        source_label = "IFS HRES open data (ECMWF, no credentials)"
+        source_attribution = (
+            "IFS HRES analysis — ECMWF open data. "
+            "CC BY 4.0. https://confluence.ecmwf.int/display/DAC/ECMWF+open+data"
+        )
+        print(f"  Source: {source_label}")
+        print(f"  Note: IFS requires a recent init time (last ~48h from operational run).")
+    else:
+        print(f"  ERROR: Unknown source '{source}'. Use 'arco' or 'ifs'.")
         return 1
 
-    # T4 memory optimisation: convert to bfloat16 before moving to GPU.
-    # 1.26B params: fp32 ~5 GB → bf16 ~2.5 GB. Aurora uses bf16 internally anyway.
-    if device.type == "cuda":
-        model = model.to(dtype=torch.bfloat16)
-        print(f"  Converted to bfloat16 for T4 memory budget")
+    # ── Stage 3: Load GraphCastSmall ──────────────────────────────────────────
+    print(f"\n[STAGE 3/4] Loading GraphCastSmall weights")
+    t_load_start = time_module.time()
 
-    # ------------------------------------------------------------------ #
-    # Step 4: Run inference
-    # ------------------------------------------------------------------ #
-    print(f"\n[4/5] Running {n_hours}h forecast on {device}...")
-    print(f"  Note: Aurora1p5 needs IFS at t-6h and t+0h for initialization.")
-    print(f"  Produces t+1h through t+{n_hours}h native hourly output (no interpolation).")
-
-    io = ZarrBackend()
-    t2 = time_module.time()
     try:
-        # torch.inference_mode disables gradient tracking → saves activation memory
-        with torch.inference_mode():
-            io = e2run.deterministic(
-                time=[init_time],
-                nsteps=n_hours,
-                prognostic=model,
-                data=ifs,
-                io=io,
-                device=device,
-                verbose=True,
-            )
+        package = GraphCastSmall.load_default_package()
+        model = GraphCastSmall.load_model(package)
+        load_time = time_module.time() - t_load_start
+        print(f"  Model loaded in {load_time:.1f}s")
+        print(f"  Checkpoint: GraphCast_small - ERA5 1979-2015 - resolution 1.0 - "
+              f"pressure levels 13 - mesh 2to5 - precipitation input and output.npz")
+        print(f"  Backend: JAX + Haiku (bfloat16 cast applied internally by model)")
+        print(f"  NOTE: Do NOT call model.to(bfloat16) — it uses bfloat16 internally via JAX.")
     except Exception as e:
-        print(f"  ERROR: Inference failed: {type(e).__name__}: {e}")
+        print(f"  ERROR: GraphCastSmall load failed: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
         return 1
 
-    # Free model weights from GPU before post-processing
+    print_vram_report("after model load")
+
+    # ── Stage 4a: Smoke test — single 6h step ────────────────────────────────
+    print(f"\n[STAGE 4/4] Staged inference")
+    print(f"\n  [4a] Smoke test — single 6h step (nsteps=1)")
+    print(f"       Purpose: verify GraphCastSmall fits within available VRAM.")
+
+    io_smoke = ZarrBackend()
+    t_smoke_start = time_module.time()
+    try:
+        with torch.inference_mode():
+            io_smoke = e2run.deterministic(
+                time=[init_time],
+                nsteps=1,
+                prognostic=model,
+                data=data,
+                io=io_smoke,
+                device=device,
+                verbose=True,
+            )
+        smoke_time = time_module.time() - t_smoke_start
+        print(f"  [4a] Smoke test PASSED in {smoke_time:.1f}s")
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() or "outofmemory" in type(e).__name__.lower():
+            print(f"\n  SMOKE TEST FAILED — OUT OF MEMORY")
+            print(f"  Error: {e}")
+            print_vram_report("at OOM")
+            print(f"\n  GraphCastSmall could not complete a single 6h inference step.")
+            print(f"  Documented Rec VRAM badge: 40 GB. This GPU has {vram_total_gb:.0f} GB.")
+            print(f"  Do NOT attempt workarounds without explicit user approval (Constitution §XI).")
+            return 1
+        print(f"  ERROR: Smoke test failed with unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    except Exception as e:
+        print(f"  ERROR: Smoke test failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    print_vram_report("after smoke test (1 step)")
+
+    if smoke_test_only:
+        print(f"\n  --smoke-test-only specified. Stopping after successful 1-step inference.")
+        print(f"  Re-run without --smoke-test-only to generate the full 24h forecast.")
+        return 0
+
+    # ── Stage 4b: Full 24h forecast (4 steps) ────────────────────────────────
+    print(f"\n  [4b] Full 24h forecast (nsteps={GC_N_STEPS})")
+
+    io_full = ZarrBackend()
+    t_infer_start = time_module.time()
+    try:
+        with torch.inference_mode():
+            io_full = e2run.deterministic(
+                time=[init_time],
+                nsteps=GC_N_STEPS,
+                prognostic=model,
+                data=data,
+                io=io_full,
+                device=device,
+                verbose=True,
+            )
+        inference_time = time_module.time() - t_infer_start
+        print(f"  [4b] Full forecast PASSED in {inference_time:.1f}s ({inference_time/60:.1f} min)")
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() or "outofmemory" in type(e).__name__.lower():
+            print(f"\n  FULL FORECAST FAILED — OUT OF MEMORY (single-step was OK)")
+            print(f"  Error: {e}")
+            print_vram_report("at OOM (full run)")
+            print(f"  The smoke test (1 step) succeeded but the full 4-step run OOM'd.")
+            print(f"  This suggests memory accumulates across AR steps in JAX's JIT cache.")
+            return 1
+        print(f"  ERROR: Full forecast failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    except Exception as e:
+        print(f"  ERROR: Full forecast failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    print_vram_report("after full forecast (4 steps)")
+
+    # Free model from memory before post-processing
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    inference_time = time_module.time() - t2
-    print(f"  Inference completed in {inference_time:.0f}s ({inference_time/60:.1f} min)")
-
-    # ------------------------------------------------------------------ #
-    # Step 5: Post-process and write artifacts (precipitation only)
-    # ------------------------------------------------------------------ #
-    print(f"\n[5/5] Post-processing and writing artifacts...")
-    ds = xr.open_zarr(io.store)
+    # ── Post-processing ───────────────────────────────────────────────────────
+    print(f"\nPost-processing GraphCastSmall output")
+    ds = xr.open_zarr(io_full.store)
 
     if debug:
-        print(f"  Raw output variables: {list(ds.data_vars)}")
-        print(f"  Lead times: {list(ds.coords.get('lead_time', ['N/A']))[:6]}...")
+        print(f"  Zarr dataset vars      : {list(ds.data_vars)}")
+        print(f"  Zarr dataset dims      : {dict(ds.dims)}")
+        print(f"  Zarr dataset coords    : {list(ds.coords)}")
 
-    # --- tp1h ---
-    if "tp1h" not in ds:
-        print("  ERROR: tp1h not in Aurora1p5 output. Check earth2studio version.")
+    if "tp06" not in ds:
+        print(f"  ERROR: 'tp06' not found in GraphCastSmall zarr output.")
+        print(f"  Available variables: {list(ds.data_vars)}")
         return 1
 
-    tp1h_raw = ds["tp1h"]
-    tp1h_ds = tp1h_raw.sel(
+    tp06_raw = ds["tp06"]
+    if debug:
+        print(f"  tp06 raw shape/dims    : {dict(tp06_raw.sizes)}")
+        print(f"  tp06 lat range         : {float(tp06_raw.lat.min()):.1f} to {float(tp06_raw.lat.max()):.1f}")
+        print(f"  tp06 lon range         : {float(tp06_raw.lon.min()):.1f} to {float(tp06_raw.lon.max()):.1f}")
+
+    # ── Spatial subset to Myanmar ─────────────────────────────────────────────
+    # Model output lat is DESCENDING (90 to −90, verified from output_coords source).
+    # For descending lat, slice(LAT_MAX, LAT_MIN) selects the correct north-to-south band.
+    tp06_myanmar = tp06_raw.sel(
         lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
         lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
-    ).squeeze()
+    )
 
-    # Ensure lat is ascending (south-to-north for our frontend)
-    if tp1h_ds.coords["lat"].values[0] > tp1h_ds.coords["lat"].values[-1]:
-        tp1h_ds = tp1h_ds.isel(lat=slice(None, None, -1))
+    # Squeeze out any size-1 dimensions (batch=1, time=1 init time)
+    tp06_myanmar = tp06_myanmar.squeeze()
 
-    # Earth2Studio aurora1p5.py applies aurora_log_untransform() internally before
-    # writing to zarr, so zarr["tp1h"] is already in physical metres (not log-space).
-    # aurora_log_untransform: 0.001 * (exp(scaled_tp_1h) - 1) → metres
-    # Correct conversion: metres * 1000 → mm / 1-hour accumulation
-    tp1h_m = tp1h_ds.values.astype(np.float32)
-    tp1h_mm = np.maximum(tp1h_m * 1000.0, 0.0).astype(np.float32)
-    print(f"  tp1h: shape={tp1h_mm.shape}, range=[{tp1h_mm.min():.4f}, {tp1h_mm.max():.2f}] mm / 1h")
+    if debug:
+        print(f"  tp06 after Myanmar subset + squeeze: {dict(tp06_myanmar.sizes)}")
 
-    lats_out = tp1h_ds.coords["lat"].values.astype(np.float32)
-    lons_out = tp1h_ds.coords["lon"].values.astype(np.float32)
+    # Ensure lat is ASCENDING (south-to-north) for the binary artifact.
+    # The frontend indexes lat from south: lat[0]=9°N, lat[20]=29°N.
+    if tp06_myanmar.coords["lat"].values[0] > tp06_myanmar.coords["lat"].values[-1]:
+        tp06_myanmar = tp06_myanmar.isel(lat=slice(None, None, -1))
+
+    lats_out = tp06_myanmar.coords["lat"].values.astype(np.float64)
+    lons_out = tp06_myanmar.coords["lon"].values.astype(np.float64)
     n_lat_out, n_lon_out = len(lats_out), len(lons_out)
 
-    # Prepend t+0: precipitation at init hour is 0 by definition (no prior accumulation)
-    tp1h_full = np.concatenate(
-        [np.zeros((1, n_lat_out, n_lon_out), dtype=np.float32), tp1h_mm], axis=0
+    # Validate expected grid dimensions
+    if n_lat_out != GC_N_LAT:
+        print(f"  WARNING: Expected {GC_N_LAT} lat points, got {n_lat_out}. "
+              f"Lat values: {lats_out}")
+    if n_lon_out != GC_N_LON:
+        print(f"  WARNING: Expected {GC_N_LON} lon points, got {n_lon_out}. "
+              f"Lon values: {lons_out}")
+
+    # ── tp06 unit conversion ──────────────────────────────────────────────────
+    # GraphCastSmall tp06 output is in physical METRES (verified from model source).
+    # NO log or exponential transform is applied — unlike Aurora's tp1h.
+    # Conversion: metres × 1000 = mm per 6-hour accumulation period.
+    tp06_m = tp06_myanmar.values.astype(np.float32)
+    tp06_mm = np.maximum(tp06_m * 1000.0, 0.0).astype(np.float32)
+
+    if debug:
+        print(f"  tp06 metres: min={tp06_m.min():.6f}, max={tp06_m.max():.4f}")
+    print(f"  tp06 (mm/6h): shape={tp06_mm.shape}, "
+          f"range=[{tp06_mm.min():.4f}, {tp06_mm.max():.2f}]")
+
+    # ── Prepend t+0h initialization frame ────────────────────────────────────
+    # Earth2Studio run.deterministic() produces forecast steps t+6h through t+24h.
+    # We prepend a synthetic t+0h frame (precipitation = 0) to complete the 5-frame series.
+    # The t+0h frame represents the analysis state; no forecast accumulation has occurred.
+    tp06_full = np.concatenate(
+        [np.zeros((1, n_lat_out, n_lon_out), dtype=np.float32), tp06_mm],
+        axis=0,
     )
-    n_times = tp1h_full.shape[0]  # n_hours + 1 (e.g. 49 for 48h horizon)
+    n_frames = tp06_full.shape[0]
 
-    print(f"  Final array: [{n_times}, {n_lat_out}, {n_lon_out}] = [times, lat, lon]")
-    print(f"  tp1h full: [{tp1h_full.min():.4f}, {tp1h_full.max():.4f}] mm / 1h accumulation")
+    if n_frames != GC_N_FRAMES:
+        print(f"  WARNING: Expected {GC_N_FRAMES} frames, got {n_frames}.")
 
-    # Timestamps: t+0 through t+n_hours
+    print(f"  Final array: [{n_frames}, {n_lat_out}, {n_lon_out}] = [frames, lat, lon]")
+
+    # ── Timestamps ───────────────────────────────────────────────────────────
     times_utc = [
-        (init_time + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for h in range(n_times)
+        (init_time + timedelta(hours=i * GC_STEP_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for i in range(n_frames)  # i=0→t+0h, i=1→t+6h, ..., i=4→t+24h
     ]
 
-    # Write binary artifact
+    # ── Write precipitation.bin ───────────────────────────────────────────────
     precip_path = output_dir / "precipitation.bin"
-    precip_path.write_bytes(tp1h_full.astype("<f4").tobytes())
-    print(f"  precipitation.bin: {precip_path.stat().st_size / 1024:.0f} KB")
+    precip_path.write_bytes(tp06_full.astype("<f4").tobytes())
+    file_size_bytes = precip_path.stat().st_size
+    print(f"  precipitation.bin: {file_size_bytes} bytes ({file_size_bytes/1024:.1f} KB)")
 
-    # Precipitation sanity check
-    precip_ok = check_precipitation_sanity(tp1h_full, sanity_max_mm)
+    expected_bytes = n_frames * n_lat_out * n_lon_out * 4
+    if file_size_bytes != expected_bytes:
+        print(f"  WARNING: Expected {expected_bytes} bytes, got {file_size_bytes}")
+
+    # ── Sanity check ──────────────────────────────────────────────────────────
+    precip_ok = check_precipitation_sanity(tp06_full, sanity_max_mm)
     if not precip_ok:
-        print("  WARNING: Precipitation sanity check FAILED. Data written as-is.")
+        print("  WARNING: Sanity check FAILED. Data written as-is (never silently modified).")
 
-    # Build metadata
-    total_time = time_module.time() - t_start
+    # ── Write forecast.json ───────────────────────────────────────────────────
+    total_time = time_module.time() - t_pipeline_start
+    torch_alloc_final, torch_res_final = _torch_vram_gb()
+    jax_used_final = _jax_vram_gb()
+
     meta = {
-        "schema_version": "1.0",
-        "model": "Aurora1p5",
-        "model_version": "1.5",
-        "model_checkpoint": "aurora-0.25-v1.5.ckpt",
-        "model_source": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "initialization_source": "IFS",
+        "schema_version": "2.0",
+        "model": "GraphCastSmall",
+        "model_version": "1.0",
+        "model_checkpoint": (
+            "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - "
+            "pressure levels 13 - mesh 2to5 - precipitation input and output.npz"
+        ),
+        "model_source": "gs://dm_graphcast/graphcast",
+        "model_attribution": (
+            "GraphCast by DeepMind/Google. "
+            "Lam et al. (2023), Science. https://arxiv.org/abs/2212.12794. "
+            "Earth2Studio wrapper by NVIDIA."
+        ),
+        "initialization_source": source.upper(),
         "initialization_time": times_utc[0],
         "forecast_generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sic_handling": sic_handling,
-        "forecast_horizon_hours": n_hours,
-        "n_times": n_times,
-        "spatial_resolution_deg": 0.25,
-        "display_resolution_deg": 0.05,
-        "spatial_interpolation": "bilinear",
-        "boundary_mask": "Myanmar administrative boundary (GeoJSON scanline rasterization)",
+        "forecast_horizon_hours": GC_HORIZON_HOURS,
+        "native_timestep_hours": GC_STEP_HOURS,
+        "n_times": n_frames,
+        "spatial_resolution_deg": 1.0,
+        "display_resolution_deg": None,
         "region": "Myanmar",
         "bbox": {
             "lat_min": float(lats_out.min()),
@@ -415,50 +580,64 @@ def run_pipeline(
             "lon_min": float(lons_out.min()),
             "lon_max": float(lons_out.max()),
         },
-        "grid": {"n_lat": n_lat_out, "n_lon": n_lon_out},
+        "grid": {
+            "n_lat": n_lat_out,
+            "n_lon": n_lon_out,
+        },
         "lat": lats_out.tolist(),
         "lon": lons_out.tolist(),
         "times_utc": times_utc,
         "variables": {
             "precipitation": {
                 "display_name": "Precipitation",
-                "units": "mm / 1-hour accumulation",
-                "source_variable": "tp1h",
-                "temporal_resolution": "hourly",
-                "temporal_semantics": "Total precipitation accumulated over 1-hour forecast period",
+                "units": "mm / 6h",
+                "source_variable": "tp06",
+                "temporal_resolution": "6-hourly",
+                "temporal_semantics": (
+                    "Total precipitation accumulated over the 6-hour forecast "
+                    "period ending at the displayed valid time."
+                ),
                 "temporal_disclosure": (
-                    "Precipitation values represent total rainfall accumulated during each "
-                    "1-hour forecast period. These are not instantaneous rainfall rates."
+                    "Precipitation values represent total rainfall accumulated "
+                    "during the 6-hour forecast period ending at the displayed time. "
+                    "These are not instantaneous rainfall rates."
                 ),
                 "transformation_provenance": {
-                    "variable": "tp1h",
-                    "unit": "mm",
-                    "accumulation_period": "1h",
-                    "source_unit": "m",
-                    "conversion": "metres * 1000",
-                    "temporal_semantics": "1-hour accumulation over the associated forecast interval",
+                    "source_variable": "tp06",
+                    "source_unit": "metres",
+                    "conversion": "metres × 1000",
+                    "output_unit": "mm",
+                    "accumulation_period_hours": GC_STEP_HOURS,
+                    "log_transform_applied": False,
+                    "exp_transform_applied": False,
                     "pipeline": (
-                        "Aurora raw output (scaled_tp_1h, log-space)"
-                        " -> Earth2Studio aurora_log_untransform: 0.001*(exp(x)-1) -> physical metres in zarr"
-                        " -> metres * 1000 -> mm / 1-hour accumulation"
+                        "GraphCastSmall native tp06 output (physical metres, no log transform) "
+                        "→ metres × 1000 → mm / 6h accumulation "
+                        "→ clamp to ≥ 0 (physical constraint)"
                     ),
                 },
+                "t0_note": (
+                    "t+0h frame (index 0) is synthetic: precipitation set to 0.0. "
+                    "It represents the analysis state; no forecast accumulation has occurred."
+                ),
                 "native_output": True,
                 "file": "precipitation.bin",
-                "fill_value": -9999.0,
+                "fill_value": None,
             },
         },
-        "data_source_attribution": (
-            f"IFS HRES analysis — ECMWF open data ({ifs_source} mirror). "
-            "CC BY 4.0. https://confluence.ecmwf.int/display/DAC/ECMWF+open+data"
-        ),
-        "model_attribution": "Microsoft Research Aurora v1.5 — https://github.com/microsoft/aurora",
-        "earth2studio_version": "0.17.0",
+        "data_source_attribution": source_attribution,
+        "earth2studio_version": ">=0.17.0",
         "inference_config": {
-            "device": device_desc,
-            "ifs_source": ifs_source,
-            "patched_vars": list(IFS_PATCH_VARS.keys()),
-            "memory_optimisations": ["bfloat16", "inference_mode", "expandable_segments"],
+            "device": device_label,
+            "vram_total_gb": round(vram_total_gb, 1),
+            "jax_env": {
+                "XLA_PYTHON_CLIENT_PREALLOCATE": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"),
+            },
+            "torch_alloc_gb_at_end": round(torch_alloc_final, 2),
+            "torch_reserved_gb_at_end": round(torch_res_final, 2),
+            "jax_bytes_in_use_gb_at_end": round(jax_used_final, 2) if jax_used_final is not None else None,
+            "model_load_time_seconds": round(load_time),
             "inference_time_seconds": round(inference_time),
             "total_pipeline_time_seconds": round(total_time),
         },
@@ -470,52 +649,128 @@ def run_pipeline(
         json.dump(meta, f, indent=2)
     print(f"  forecast.json written")
 
-    print(f"\nPipeline complete in {total_time/60:.1f} min")
+    print(f"\n{'='*64}")
+    print(f"Pipeline complete in {total_time/60:.1f} min")
+    print(f"")
+    print(f"  Model     : GraphCastSmall")
+    print(f"  Source    : {source.upper()}")
+    print(f"  GPU       : {device_label}")
+    print(f"  Frames    : {n_frames} ({', '.join(times_utc)})")
+    print(f"  Grid      : {n_lat_out} lat × {n_lon_out} lon")
+    print(f"  Output    : {output_dir.resolve()}")
+    print(f"")
     print(f"Validate with:")
     print(f"  uv run python scripts/validate_forecast.py --data-dir {output_dir}")
+    print(f"{'='*64}")
+
     return 0
 
 
+# ── CLI entry point ───────────────────────────────────────────────────────────
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate Aurora1p5 + IFS forecast")
+    parser = argparse.ArgumentParser(
+        description="Generate GraphCastSmall 24h Myanmar precipitation forecast",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Development run (historical date, ARCO ERA5)
+  uv run python scripts/generate_forecast.py --source arco --init-time 2022-01-01T00:00:00Z
+
+  # Smoke test only (verify VRAM before committing to full run)
+  uv run python scripts/generate_forecast.py --source arco --init-time 2022-01-01T00:00:00Z --smoke-test-only
+
+  # Operational run (IFS open data, recent init time)
+  uv run python scripts/generate_forecast.py --source ifs
+""",
+    )
     parser.add_argument(
         "--init-time",
         default=None,
-        help="Initialization time ISO 8601 (e.g. 2026-08-09T00:00:00Z). "
-             "Defaults to latest available IFS analysis.",
+        metavar="YYYY-MM-DDTHH:MM:SSZ",
+        help=(
+            "Forecast initialization time (ISO 8601). "
+            "For --source arco: must be within 1959–2023 (e.g. 2022-01-01T00:00:00Z). "
+            "For --source ifs: defaults to latest available IFS analysis."
+        ),
     )
-    parser.add_argument("--output-dir", default="data/forecast", help="Output directory")
     parser.add_argument(
-        "--ifs-source",
-        choices=["google", "aws", "ecmwf"],
-        default="google",
-        help="IFS open data mirror (default: google; AWS may be rate-limited)",
+        "--source",
+        choices=["arco", "ifs"],
+        default="arco",
+        help=(
+            "Initialization data source. "
+            "'arco' (default): ARCO ERA5 reanalysis, historical, no credentials. "
+            "'ifs': IFS HRES open data, near-real-time, no credentials."
+        ),
     )
-    parser.add_argument("--n-hours", type=int, default=48, help="Forecast hours (default: 48)")
+    parser.add_argument(
+        "--output-dir",
+        default="data/forecast",
+        help="Output directory for precipitation.bin and forecast.json (default: data/forecast)",
+    )
+    parser.add_argument(
+        "--smoke-test-only",
+        action="store_true",
+        help=(
+            "Run only the staged 1-step smoke test (6h inference) without "
+            "producing the full 24h forecast. Use to verify VRAM compatibility."
+        ),
+    )
     parser.add_argument(
         "--precip-max-mm",
         type=float,
-        default=300.0,
+        default=DEFAULT_PRECIP_MAX_MM,
+        metavar="MM",
         help=(
-            "Physical sanity threshold for precipitation maximum (mm / 1h). "
-            "A WARNING is printed if the max exceeds this value; data is not modified. "
-            "Global extreme observed values are ~300 mm/h (default: 300)."
+            f"Physical sanity threshold for maximum tp06 (mm / 6h). "
+            f"A FAIL is reported if the max exceeds this value; data is never modified. "
+            f"Default: {DEFAULT_PRECIP_MAX_MM}. Extreme tropical 6h records: ~300–400 mm."
         ),
     )
-    parser.add_argument("--debug", action="store_true", help="Verbose debug output")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print verbose debug output including zarr structure and raw value ranges.",
+    )
+
     args = parser.parse_args()
 
+    # Resolve init_time
     if args.init_time:
-        init_time = datetime.fromisoformat(args.init_time.replace("Z", "+00:00"))
+        try:
+            init_time = datetime.fromisoformat(args.init_time.replace("Z", "+00:00"))
+        except ValueError as e:
+            print(f"ERROR: Invalid --init-time format: {e}")
+            print(f"       Expected ISO 8601, e.g. 2022-01-01T00:00:00Z")
+            return 1
     else:
-        init_time = find_latest_ifs_init()
-        print(f"Auto-detected init time: {init_time.isoformat()}")
+        if args.source == "ifs":
+            init_time = find_latest_ifs_init()
+            print(f"Auto-detected IFS init time: {init_time.isoformat()}")
+        else:
+            print(
+                "ERROR: --init-time is required for --source arco. "
+                "Specify a date within the ARCO ERA5 range (1959–2023). "
+                "Example: --init-time 2022-01-01T00:00:00Z"
+            )
+            return 1
+
+    # Warn if init_time appears to be outside ARCO coverage
+    if args.source == "arco":
+        arco_cutoff = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        if init_time >= arco_cutoff:
+            print(
+                f"WARNING: init_time {init_time.date()} may be outside ARCO's coverage "
+                f"(ERA5 reanalysis ends approximately 2023). "
+                f"Use --source ifs for recent dates."
+            )
 
     return run_pipeline(
         init_time=init_time,
-        n_hours=args.n_hours,
+        source=args.source,
         output_dir=Path(args.output_dir),
-        ifs_source=args.ifs_source,
+        smoke_test_only=args.smoke_test_only,
         debug=args.debug,
         sanity_max_mm=args.precip_max_mm,
     )

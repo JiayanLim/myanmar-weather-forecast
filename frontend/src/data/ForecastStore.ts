@@ -10,7 +10,7 @@ interface ForecastState {
   error: string | null;
 
   // UI state
-  currentHour: number; // 0–48
+  currentHour: number; // frame index 0–(n_times-1)
   isPlaying: boolean;
   playbackSpeed: PlaybackSpeed;
 
@@ -63,13 +63,13 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
   setLoading: (loading) => set({ isLoading: loading }),
 
   setHour: (hour) => {
-    const max = useForecastStore.getState().metadata?.forecast_horizon_hours ?? 48;
+    const max = (useForecastStore.getState().metadata?.n_times ?? 5) - 1;
     set({ currentHour: Math.max(0, Math.min(max, hour)) });
   },
 
   stepForward: () => {
     const { currentHour, metadata } = get();
-    const maxHour = metadata?.forecast_horizon_hours ?? 48;
+    const maxHour = (metadata?.n_times ?? 5) - 1;
     set({ currentHour: Math.min(currentHour + 1, maxHour) });
   },
 

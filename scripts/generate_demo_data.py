@@ -1,13 +1,19 @@
 """
 generate_demo_data.py — Generate deterministic demo forecast artifacts (no GPU required).
 
-Produces the same schema as production forecasts. Used for:
+Produces the same schema as GraphCastSmall production forecasts (schema v2.0).
+Used for:
   - Frontend development without a GPU
   - CI/CD pipeline on GitHub Actions
   - Integration testing
 
-The synthetic data is physically plausible but not a real forecast.
-The forecast.json sets is_demo: true.
+The synthetic data is NOT from GraphCastSmall. It is physically plausible but
+clearly marked is_demo: true. Do not use for operational decisions.
+
+Temporal semantics:
+  tp06 = 6-hour accumulated total precipitation (same contract as production).
+  t+0h frame is set to 0.0 (synthetic init; no forecast accumulation at init hour).
+  t+6h through t+24h contain synthetic Gaussian-blob precipitation patterns.
 
 Usage:
     uv run python scripts/generate_demo_data.py [--output-dir data/demo/]
@@ -17,133 +23,115 @@ from __future__ import annotations
 
 import argparse
 import json
-import struct
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 
+# ── Grid constants (must match production GraphCastSmall contract) ────────────
 MYANMAR_LAT_MIN, MYANMAR_LAT_MAX = 9.0, 29.0
 MYANMAR_LON_MIN, MYANMAR_LON_MAX = 92.0, 102.0
-N_LAT = 81   # 9N to 29N step 0.25
-N_LON = 41   # 92E to 102E step 0.25
-N_TIMES = 49   # 0h to 48h inclusive
+N_LAT = 21          # 9°N to 29°N at 1.0° spacing
+N_LON = 11          # 92°E to 102°E at 1.0° spacing
+N_FRAMES = 5        # t+0h, t+6h, t+12h, t+18h, t+24h
+STEP_HOURS = 6      # Native GraphCastSmall timestep
 
 # Fixed init time for reproducibility
 DEMO_INIT_TIME = datetime(2026, 8, 9, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def make_lat_lon_grids() -> tuple[np.ndarray, np.ndarray]:
-    lats = np.linspace(MYANMAR_LAT_MIN, MYANMAR_LAT_MAX, N_LAT, dtype=np.float32)
-    lons = np.linspace(MYANMAR_LON_MIN, MYANMAR_LON_MAX, N_LON, dtype=np.float32)
+    lats = np.linspace(MYANMAR_LAT_MIN, MYANMAR_LAT_MAX, N_LAT, dtype=np.float64)
+    lons = np.linspace(MYANMAR_LON_MIN, MYANMAR_LON_MAX, N_LON, dtype=np.float64)
     return lats, lons
-
-
-def generate_temperature(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
-    """
-    Synthetic 2m temperature in degrees C.
-    Pattern: base temp decreasing with latitude, diurnal cycle, slow synoptic change.
-    All values physically plausible for Myanmar (20–40°C).
-    """
-    times = np.arange(N_TIMES, dtype=np.float32)
-    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing="ij")  # [81, 41]
-
-    # Base temperature: ~35°C at south, ~25°C at north
-    base = 35.0 - 0.5 * (lat_grid - MYANMAR_LAT_MIN)
-
-    # Diurnal cycle: +/- 5°C over 24h
-    hour_of_day = (times % 24) / 24.0  # [0, 1)
-    diurnal = 5.0 * np.sin(2 * np.pi * (hour_of_day - 0.25))  # peak at ~14:00 local
-
-    # Slow synoptic signal: ±3°C drift over 7 days
-    synoptic = 3.0 * np.sin(2 * np.pi * times / (168.0 * 1.5))
-
-    # Spatial variability: inland hotter, coast cooler
-    lon_factor = (lon_grid - MYANMAR_LON_MIN) / (MYANMAR_LON_MAX - MYANMAR_LON_MIN)
-    spatial_mod = 2.0 * (lon_factor - 0.5)
-
-    # Build [n_times, n_lat, n_lon]
-    t = (
-        base[np.newaxis, :, :]
-        + diurnal[:, np.newaxis, np.newaxis]
-        + synoptic[:, np.newaxis, np.newaxis]
-        + spatial_mod[np.newaxis, :, :]
-    )
-    return t.astype(np.float32)
 
 
 def generate_precipitation(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
     """
-    Synthetic 1-hour accumulated precipitation in mm/h.
-    Pattern: convective cells moving northwest, diurnally triggered in afternoon.
-    All values >= 0.
+    Synthetic tp06: 6-hour accumulated precipitation (mm / 6h).
+
+    Pattern: convective cells that intensify through the day.
+    All values >= 0. t+0h is all zeros (no forecast at init hour).
+
+    Returns array of shape [N_FRAMES, N_LAT, N_LON] in float32.
     """
-    times = np.arange(N_TIMES, dtype=np.float32)
-    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing="ij")  # [81, 41]
+    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing="ij")  # [N_LAT, N_LON]
 
     rng = np.random.default_rng(seed=42)  # deterministic
 
-    precip = np.zeros((N_TIMES, N_LAT, N_LON), dtype=np.float32)
+    precip = np.zeros((N_FRAMES, N_LAT, N_LON), dtype=np.float32)
 
-    # Afternoon convective cells (peak 14-18 UTC for Myanmar ~ 20-24 local)
-    afternoon_hours = [h for h in range(N_TIMES) if (h % 24) in range(14, 20)]
+    # Frame 0 (t+0h): synthetic zero — no forecast accumulation at init
+    # Frames 1–4 (t+6h..t+24h): Gaussian convective cells
 
-    # Fixed convective cell centres
+    # Cell centres: (lat, lon, peak_intensity_mm_per_6h, spread_deg)
     cell_centres = [
-        (18.0, 96.0, 12.0),   # lat, lon, max_intensity mm/h
-        (21.0, 97.5, 8.0),
-        (15.0, 98.0, 15.0),
-        (25.0, 95.0, 5.0),
-        (12.0, 99.0, 20.0),
+        (18.0,  96.0,  45.0, 1.5),  # central Myanmar, moderate
+        (21.0,  97.5,  30.0, 1.0),  # northeastern
+        (15.0,  98.0,  60.0, 2.0),  # southern coast, intense
+        (25.0,  95.0,  20.0, 0.8),  # northern hills, light
+        (12.0,  99.0,  80.0, 1.8),  # Tanintharyi coast, heavy
+        (17.0,  94.5,  35.0, 1.2),  # Ayeyarwady delta
     ]
 
-    for h in afternoon_hours:
-        # Cells drift slowly northwestward
-        drift_lat = 0.002 * h
-        drift_lon = -0.001 * h
+    # Each forecast frame has different intensities
+    # (values in mm/6h — realistic for Myanmar monsoon)
+    frame_scales = [0.0, 0.5, 1.0, 0.8, 0.4]  # t+0 is always 0
 
-        for (clat, clon, intensity) in cell_centres:
-            clat_t = clat + drift_lat + rng.normal(0, 0.1)
-            clon_t = clon + drift_lon + rng.normal(0, 0.1)
+    for frame_idx in range(N_FRAMES):
+        if frame_scales[frame_idx] == 0.0:
+            continue  # t+0h stays zero
 
+        scale = frame_scales[frame_idx]
+        # Small drift per frame so cells appear to move
+        drift_lat = 0.3 * (frame_idx - 2)
+        drift_lon = -0.2 * (frame_idx - 2)
+
+        for (clat, clon, intensity, spread) in cell_centres:
+            clat_t = clat + drift_lat + rng.normal(0, 0.3)
+            clon_t = clon + drift_lon + rng.normal(0, 0.3)
             dist_sq = (lat_grid - clat_t) ** 2 + (lon_grid - clon_t) ** 2
-            cell_precip = intensity * np.exp(-dist_sq / 2.0)
-            # Scale by hour-of-day factor (peak at hour 16)
-            hour_factor = max(0, np.sin(np.pi * ((h % 24) - 12) / 10))
-            precip[h] += cell_precip * hour_factor
+            cell = intensity * scale * np.exp(-dist_sq / (2 * spread ** 2))
+            precip[frame_idx] += cell
 
     precip = np.maximum(precip, 0.0)
     return precip.astype(np.float32)
 
 
 def write_binary(arr: np.ndarray, path: Path) -> None:
-    """Write [n_times, n_lat, n_lon] float32 array as little-endian binary."""
+    """Write [n_frames, n_lat, n_lon] float32 array as little-endian binary."""
     path.write_bytes(arr.astype("<f4").tobytes())
 
 
-def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) -> None:
+def write_forecast_json(
+    output_dir: Path,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    precip_max: float,
+) -> None:
     times_utc = [
-        (DEMO_INIT_TIME + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for h in range(N_TIMES)
+        (DEMO_INIT_TIME + timedelta(hours=i * STEP_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for i in range(N_FRAMES)
     ]
 
     meta = {
-        "schema_version": "1.0",
-        "model": "Aurora1p5",
-        "model_version": "1.5",
-        "model_checkpoint": "aurora-0.25-v1.5.ckpt",
-        "model_source": "hf://microsoft/aurora",
+        "schema_version": "2.0",
+        "model": "GraphCastSmall",
+        "model_version": "1.0",
+        "model_checkpoint": (
+            "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - "
+            "pressure levels 13 - mesh 2to5 - precipitation input and output.npz"
+        ),
+        "model_source": "gs://dm_graphcast/graphcast",
         "initialization_source": "DEMO",
         "initialization_time": times_utc[0],
         "forecast_generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sic_handling": "demo mode — no real IFS data; sic not applicable",
-        "forecast_horizon_hours": 48,
-        "n_times": N_TIMES,
-        "spatial_resolution_deg": 0.25,
-        "display_resolution_deg": 0.05,
-        "spatial_interpolation": "bilinear",
-        "boundary_mask": "Myanmar administrative boundary (GeoJSON scanline rasterization)",
+        "forecast_horizon_hours": (N_FRAMES - 1) * STEP_HOURS,
+        "native_timestep_hours": STEP_HOURS,
+        "n_times": N_FRAMES,
+        "spatial_resolution_deg": 1.0,
+        "display_resolution_deg": None,
         "region": "Myanmar",
         "bbox": {
             "lat_min": MYANMAR_LAT_MIN,
@@ -158,22 +146,45 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
         "variables": {
             "precipitation": {
                 "display_name": "Precipitation",
-                "units": "mm / 1-hour accumulation",
-                "source_variable": "tp1h",
-                "temporal_resolution": "hourly",
-                "temporal_semantics": "Total precipitation accumulated over 1-hour forecast period",
-                "temporal_disclosure": (
-                    "Precipitation values represent total rainfall accumulated during each "
-                    "1-hour forecast period. These are not instantaneous rainfall rates."
+                "units": "mm / 6h",
+                "source_variable": "tp06",
+                "temporal_resolution": "6-hourly",
+                "temporal_semantics": (
+                    "Total precipitation accumulated over the 6-hour forecast "
+                    "period ending at the displayed valid time."
                 ),
-                "transformation": "demo uses synthetic physical values in mm / 1-hour accumulation (no log transform applied)",
+                "temporal_disclosure": (
+                    "Precipitation values represent total rainfall accumulated "
+                    "during the 6-hour forecast period ending at the displayed time. "
+                    "These are not instantaneous rainfall rates."
+                ),
+                "transformation_provenance": {
+                    "source_variable": "tp06",
+                    "source_unit": "metres",
+                    "conversion": "metres × 1000",
+                    "output_unit": "mm",
+                    "accumulation_period_hours": STEP_HOURS,
+                    "log_transform_applied": False,
+                    "exp_transform_applied": False,
+                    "pipeline": (
+                        "DEMO synthetic data: mm/6h values generated directly. "
+                        "Production: GraphCastSmall native tp06 (physical metres) → metres × 1000 → mm/6h."
+                    ),
+                },
+                "t0_note": (
+                    "t+0h frame (index 0) is synthetic: precipitation set to 0.0. "
+                    "It represents the analysis state; no forecast accumulation has occurred."
+                ),
                 "native_output": True,
                 "file": "precipitation.bin",
-                "fill_value": -9999.0,
+                "fill_value": None,
             },
         },
-        "data_source_attribution": "DEMO DATA — synthetic, not real forecast",
-        "model_attribution": "Microsoft Research Aurora v1.5 (schema only; weights not used in demo)",
+        "data_source_attribution": "DEMO DATA — synthetic, not a real GraphCastSmall forecast",
+        "model_attribution": (
+            "GraphCast by DeepMind/Google (schema only; model not executed in demo). "
+            "Earth2Studio wrapper by NVIDIA."
+        ),
         "earth2studio_version": ">=0.17.0",
         "is_demo": True,
     }
@@ -183,7 +194,9 @@ def write_forecast_json(output_dir: Path, lats: np.ndarray, lons: np.ndarray) ->
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate demo forecast artifacts (no GPU)")
+    parser = argparse.ArgumentParser(
+        description="Generate GraphCastSmall-compatible demo forecast artifacts (no GPU)"
+    )
     parser.add_argument("--output-dir", default="data/demo", help="Output directory")
     args = parser.parse_args()
 
@@ -191,21 +204,34 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Generating demo forecast artifacts → {output_dir.resolve()}")
-    print(f"Grid: {N_TIMES} times × {N_LAT} lat × {N_LON} lon")
+    print(f"Schema : v2.0 (GraphCastSmall contract)")
+    print(f"Grid   : {N_FRAMES} frames × {N_LAT} lat × {N_LON} lon")
+    print(f"Steps  : {STEP_HOURS}h × {N_FRAMES - 1} = {(N_FRAMES-1)*STEP_HOURS}h horizon")
 
     lats, lons = make_lat_lon_grids()
+    expected_bytes = N_FRAMES * N_LAT * N_LON * 4  # 5 × 21 × 11 × 4 = 4,620
 
-    print("  Generating precipitation...", end=" ", flush=True)
+    print("  Generating tp06 precipitation (mm/6h)...", end=" ", flush=True)
     precip = generate_precipitation(lats, lons)
     write_binary(precip, output_dir / "precipitation.bin")
-    print(f"done ({precip.nbytes / 1024:.0f} KB, range [{precip.min():.2f}, {precip.max():.2f}] mm/h)")
+    actual_bytes = (output_dir / "precipitation.bin").stat().st_size
+    assert actual_bytes == expected_bytes, f"Size mismatch: {actual_bytes} != {expected_bytes}"
+    print(
+        f"done ({actual_bytes} bytes, "
+        f"range [{precip.min():.2f}, {precip.max():.2f}] mm/6h)"
+    )
 
     print("  Writing forecast.json...", end=" ", flush=True)
-    write_forecast_json(output_dir, lats, lons)
+    write_forecast_json(output_dir, lats, lons, float(precip.max()))
     print("done")
 
-    print(f"\nDemo artifacts written to {output_dir.resolve()}")
-    print("Validate with:  uv run python scripts/validate_forecast.py --data-dir", args.output_dir)
+    print()
+    print(f"Demo artifacts written to {output_dir.resolve()}")
+    print(f"  precipitation.bin : {N_FRAMES} × {N_LAT} × {N_LON} × float32 = {expected_bytes} bytes")
+    print(f"  forecast.json     : schema v2.0, is_demo=true, model=GraphCastSmall")
+    print()
+    print(f"Validate with:")
+    print(f"  uv run python scripts/validate_forecast.py --data-dir {args.output_dir}")
     return 0
 
 

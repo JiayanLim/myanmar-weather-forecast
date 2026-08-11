@@ -11,12 +11,13 @@ export interface GridInfo {
 }
 
 export interface TransformationProvenance {
-  variable: string;
-  unit: string;
-  accumulation_period: string;
+  source_variable: string;
   source_unit: string;
   conversion: string;
-  temporal_semantics: string;
+  output_unit: string;
+  accumulation_period_hours: number;
+  log_transform_applied: boolean;
+  exp_transform_applied: boolean;
   pipeline: string;
 }
 
@@ -27,11 +28,11 @@ export interface VariableMeta {
   temporal_resolution: string;
   temporal_semantics: string;
   temporal_disclosure?: string;
-  transformation?: string;
   transformation_provenance?: TransformationProvenance;
+  t0_note?: string;
   native_output?: boolean;
   file: string;
-  fill_value: number;
+  fill_value: number | null;
 }
 
 export interface ForecastMetadata {
@@ -43,13 +44,11 @@ export interface ForecastMetadata {
   initialization_source: string;
   initialization_time: string;
   forecast_generated_at: string;
-  sic_handling: string;
   forecast_horizon_hours: number;
+  native_timestep_hours: number;
   n_times: number;
   spatial_resolution_deg: number;
-  display_resolution_deg?: number;
-  spatial_interpolation?: string;
-  boundary_mask?: string;
+  display_resolution_deg: number | null;
   region: string;
   bbox: BBox;
   grid: GridInfo;
@@ -58,17 +57,14 @@ export interface ForecastMetadata {
   times_utc: string[];
   variables: {
     precipitation: VariableMeta;
-    temperature_2m?: VariableMeta;
   };
   data_source_attribution: string;
   model_attribution: string;
   earth2studio_version: string;
   inference_config?: {
     device: string;
-    ifs_source: string;
-    patched_vars: string[];
-    inference_time_seconds: number;
-    total_pipeline_time_seconds: number;
+    peak_vram_gb: number | null;
+    [key: string]: unknown;
   };
   is_demo: boolean;
 }
