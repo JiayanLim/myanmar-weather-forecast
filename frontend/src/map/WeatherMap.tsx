@@ -5,6 +5,7 @@ import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoade
 import {
   renderWithInterpolation,
   renderWindDirectionWithInterpolation,
+  drawWindArrows,
   PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX,
   TEMP_LUT,        TEMP_MIN,   TEMP_MAX,
   WIND_LUT_ALPHA,  WIND_MIN,   WIND_MAX,
@@ -172,6 +173,16 @@ export function WeatherMap() {
         new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), DISPLAY_N_LON, DISPLAY_N_LAT),
         0, 0,
       );
+
+      // Wind arrow overlay (FR-W01–FR-W05): draw on top of raster when wind is active
+      if ((activeVariable === 'wind_speed' || activeVariable === 'wind_direction')
+          && windSpeed && windDirection) {
+        const wsFrame = getFrame(windSpeed,   currentHour, n_lat, n_lon);
+        const wdFrame = getFrame(windDirection, currentHour, n_lat, n_lon);
+        // Canvas intrinsic size = DISPLAY_N_LON × DISPLAY_N_LAT pixels,
+        // matching the raster — pass these as the "canvas pixel" dimensions.
+        drawWindArrows(ctx, wsFrame, wdFrame, modelStep, n_lat, n_lon, DISPLAY_N_LON, DISPLAY_N_LAT);
+      }
     }
 
     if (map) positionOverlay(map, metadata);
