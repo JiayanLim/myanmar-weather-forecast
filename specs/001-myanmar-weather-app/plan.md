@@ -3,6 +3,7 @@
 **Branch**: `001-myanmar-weather-app`
 **Date**: 2026-08-12 (v4 — new target: 7-day / 4-variable / ERA5 2021-01-01 / model TBD)
 **Revised**: 2026-08-16 (v5 — Spec Kit update phase RS; R4 timings corrected; phases added)
+**Revised**: 2026-08-17 (v6 — Phase R11 superseded; Phase R12 added; ADR-025)
 **Spec**: `specs/001-myanmar-weather-app/spec.md`
 **Research**: `specs/001-myanmar-weather-app/research.md`
 **Constitution**: `.specify/memory/constitution.md` v3.0.0
@@ -63,7 +64,7 @@ README updated for GraphCastSmall/48h/M4.
 
 ## PART B — NEW TARGET PLAN (v4.0 — 2026-08-17)
 
-**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). RS10 COMPLETE. RS11–RS14 DEFERRED (ADR-024). R10 (precipitation calibration) and R11 (wind arrows) AUTHORIZED — NOT STARTED. Live on GitHub Pages (commit 30ff08c).
+**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). RS10 COMPLETE. RS11–RS14 DEFERRED (ADR-024). R10 COMPLETE (commit 2ee8c60). R11 COMPLETE (commit 2ee8c60) — SUPERSEDED by R12 (distribution defect + HSL visualization). R12 IN PROGRESS. Live on GitHub Pages (commit 2ee8c60).
 
 **Model**: GraphCastOperational (0.25°, JAX/Haiku, ARCO/ERA5 init)
 **R3 result**: PASS — M4 24 GB, peak RSS 1.99 GB post-compile, JIT cold ~27–34 min
@@ -363,39 +364,58 @@ The existing PRECIP_MAX=10 mm/hr and transparency ramp suppress 95% of the field
 
 ---
 
-### Phase R11: Wind Vector Arrow Overlay — NOT STARTED
+### Phase R11: Wind Vector Arrow Overlay — COMPLETE / SUPERSEDED (2026-08-17)
 
-**Classification**: New UX requirement (FR-W01–FR-W05, spec.md Section B).
-**Prerequisite**: Phase R10 complete.
-**Scope**: `frontend/src/map/colorscales.ts` and `frontend/src/map/WeatherMap.tsx`.
+**Status**: SUPERSEDED by Phase R12 (ADR-025).
 
-**Objective**: Add directional arrows overlaid on the wind_speed and wind_direction rasters
-to make wind flow patterns directly readable without requiring variable-switching.
+Commit 2ee8c60 implemented `drawWindArrows()` in `colorscales.ts` and integrated it into
+`WeatherMap.tsx`. TypeScript 0 errors; build passed; direction sanity tests passed. Deployed.
 
-**Key decisions** (per approved amendments):
-- `WIND_ARROW_GRID_STEP = 3` (initial; adjust to 2 or 4 based on visual testing)
-- Calm threshold: wind_speed < 2.0 kt → no arrow (matches verification calm threshold)
-- Arrow direction: TO direction = (stored_FROM + 180) mod 360°
-- Arrow length: proportional to wind speed; max length ≤ half inter-arrow spacing
-- Rendered on same canvas as color raster (no separate layer)
+**Two defects confirmed post-deployment**:
 
-**Direction sanity tests** (required before gate):
-- 90°FROM east → arrow points west ✓
-- 180°FROM south → arrow points north ✓
-- Popup values used as independent ground truth
+1. **Distribution defect** — arrows appeared predominantly at the bottom (southern Myanmar).
+   Root cause: `if (len < 2) continue` filter combined with `maxLen ≈ 6.77 intrinsic px`.
+   Effective draw threshold ≈ 8.87 kt (≈P75). January median = 3.10 kt → most arrows filtered.
+   Only high-wind coastal/southern points produced visible arrows.
 
-**Performance**: Measure step-transition time before and after. Accept if < 200ms total.
-No premature optimization around an isolated draw time.
+2. **HSL wind direction** — hue-based coloring not user-readable. Direction requires
+   decoding a hue wheel; arrows alone are sufficient and clearer.
+
+Phase R12 replaces the canvas implementation with an SVG/`map.project()` approach (ADR-025).
+
+---
+
+### Phase R12: SVG Wind Arrow Overlay — Replacement for R11 — NOT STARTED
+
+**Classification**: Defect fix + UX improvement. Replaces Phase R11 canvas arrows.
+**Prerequisite**: Phase R10 complete (✓). ADR-025 accepted (✓). R11 defects documented (✓).
+**Scope**: New `WindArrowOverlay.tsx`; update `WeatherMap.tsx`, `colorscales.ts`, `Legend.tsx`.
+
+**Objective**: Fix the distribution defect and replace HSL wind-direction coloring with
+SVG arrows positioned via `map.project()` for correct Mercator-projected placement.
+
+**Architecture** (ADR-025):
+- New `WindArrowOverlay.tsx` component: receives `map: maplibregl.Map | null` prop
+- Reads `windSpeed`, `windDirection`, `currentHour`, `metadata` from Zustand store
+- Samples every WIND_ARROW_GRID_STEP=3 grid points (lat and lon)
+- `map.project([lon, lat])` → CSS pixel coordinates; recomputes on `map.move`/`map.resize`
+- SVG overlay: `<svg style="position:absolute;inset:0;width:100%;height:100%">`
+- Arrow: `<g transform="translate(x,y) rotate(toDeg)">` with `<line>` shaft + `<polygon>` head
+- `toDeg = (fromDir + 180) % 360`; SVG rotation: 0°=north, clockwise
+- Arrow length: 8 CSS px (2 kt) → 22 CSS px (30 kt), guaranteed minimum — no suppression
+
+**Wind direction view**: No raster; canvas transparent; arrows over basemap only.
+**Wind speed view**: Speed raster retained; SVG arrows overlaid.
 
 **Validation**:
-- tsc 0 errors
-- npm run build passes
-- Arrows visible and correctly oriented at zoom 5.2 and zoom 10
-- Calm grid points: no arrow rendered
-- Popup values match arrow orientation
-- No step-transition regression
+- tsc 0 errors; npm run build passes
+- Arrows visible in northern (Kachin), central (Mandalay), and southern (Yangon) Myanmar
+- Direction sanity: all four cardinal directions verified
+- Popup ground truth: Yangon 95°FROM → arrow points west; Mandalay 79°FROM → points SW
+- All 29 frames step without lag (playback 4×)
+- No regression against 200ms step-transition requirement
 
-**Gate**: tsc 0 errors; build passes; all visual + sanity criteria met; commit to main + push.
+**Gate**: tsc 0 errors; build passes; full geographic distribution confirmed; deployed to main.
 
 ---
 

@@ -1756,3 +1756,106 @@ Precipitation categorical scores (0.1 mm/hr threshold, totals from 28 frames × 
 - Schema v4.0 canonical definition: ADR-019
 - Deployment workflow structure: task R100 (deploy-pages.yml)
 - Verification schema v2.0: ADR-023
+
+---
+
+### ADR-025 — Wind Arrow Overlay Architecture: SVG/Map-Projection Replacing Canvas-Intrinsic
+
+**Date**: 2026-08-17
+**Status**: ACCEPTED
+**Supersedes**: FR-W01–FR-W05 (R11 canvas implementation, commit 2ee8c60)
+
+#### Context
+
+Phase R11 implemented wind arrows using canvas 2D drawing with intrinsic pixel coordinates
+(201 × 401). Two defects were confirmed after deployment:
+
+**Defect 1 — Distribution bug (primary)**:
+Arrows appeared predominantly at the bottom of the Myanmar domain (southern regions)
+rather than across the full 81×41 grid. Root cause:
+
+```
+maxLen = arrowSpacingPx × 0.45
+       = (0.25 × 3 × 20.05) × 0.45
+       = 6.77 intrinsic px
+
+if (len < 2) continue   // minimum-length filter
+
+Effective speed threshold: speed < (2 / 6.77) × 30 kt ≈ 8.87 kt
+```
+
+January 2021 NE monsoon wind statistics: min=0.005 kt, median=3.10 kt, P95=12.72 kt.
+At median 3.10 kt: `len = (3.10/30) × 6.77 = 0.70 px` → filtered out.
+Only wind ≥ 8.87 kt (roughly P75+) produced visible arrows. These high-wind points
+are concentrated in southern/coastal Myanmar (Andaman coast, Tenasserim) — hence
+arrows appearing only at the bottom.
+
+**Defect 2 — Mercator distortion (secondary)**:
+The canvas coordinate mapping used a uniform px/deg ratio:
+`pxPerDegLat = canvasPxH / (lat_max - lat_min) = 401/20 = 20.05 px/°`
+
+However, the MapLibre basemap uses Web Mercator. At 29°N, 1° latitude ≈ cos(29°) = 0.875×
+the Mercator scale at 9°N. Grid point screen positions drift ~12% between north and south.
+This is minor but means arrow positions do not exactly match the underlying raster pixels.
+
+**Defect 3 — HSL wind direction coloring (separate UX issue)**:
+`renderWindDirectionWithInterpolation` maps wind direction to HSL hue. This is not
+user-readable without decoding the hue wheel. Users cannot perceive "arrow pointing west"
+from a cyan-colored pixel. The hue mapping must be replaced with actual directional arrows.
+
+#### Decision
+
+Replace canvas-drawn wind arrows and HSL wind-direction raster with an SVG overlay
+component (`WindArrowOverlay.tsx`) implementing:
+
+1. **Positioning via `map.project([lon, lat])`**: converts each sampled model grid point
+   to Mercator-correct screen CSS pixel coordinates. No uniform px/deg approximation.
+
+2. **SVG rendering**: arrows rendered as `<line>` shaft + `<polygon>` arrowhead elements
+   inside a single `<svg style="position:absolute;inset:0">` overlay div. ~150–350 elements
+   at WIND_ARROW_GRID_STEP=3 — acceptable without DOM performance issues.
+
+3. **Arrow direction via SVG `rotate(toDeg)`**: where `toDeg = (fromDir + 180) % 360`.
+   SVG rotation convention (0°=up=north, clockwise) directly encodes meteorological TO
+   direction. No trigonometry, no sin/cos for direction — only for the arrowhead vertices.
+
+4. **Guaranteed minimum size**: any wind ≥ 2 kt renders an arrow of at least 8 CSS px.
+   No minimum-length suppress filter. Arrow length interpolates 8–22 CSS px over 2–30 kt.
+
+5. **Wind direction view**: canvas is transparent (no HSL raster). Arrows appear over
+   the basemap. Direction is immediately readable from arrow orientation.
+
+6. **Wind speed view**: existing speed color raster retained. SVG arrows overlaid,
+   encoding both direction and relative speed.
+
+7. **Live repositioning**: on every `map.move` and `map.resize` event, recompute
+   `map.project()` for all sampled grid points and update arrow positions.
+
+#### Alternatives Considered
+
+- **Fix canvas arrows in-place**: increasing `maxLen` and removing the min-length filter
+  would fix the distribution defect but not the Mercator error or the HSL direction issue.
+  Not chosen: the SVG approach is strictly better in all three dimensions.
+
+- **MapLibre GeoJSON/symbol layer**: MapLibre can render rotated icon layers natively.
+  Not chosen: requires a raster sprite/icon image; hot-reloading on frame change is more
+  complex than React state update.
+
+#### Consequences
+
+- `drawWindArrows()` in `colorscales.ts` is removed (functionality moved to component).
+- `renderWindDirectionWithInterpolation()` is no longer called for the primary view.
+  Wind direction coloring via HSL is retired. Function may be retained for internal use
+  or removed in cleanup.
+- `WindArrowOverlay.tsx` receives the `maplibregl.Map` instance as a prop from WeatherMap.
+- `Legend.tsx`: remove HSL hue wheel for wind_direction; add text/icon description.
+- FR-W01–FR-W07 in spec.md v7 supersede the R11 FR-W01–FR-W05.
+- Phase R12 in plan.md supersedes Phase R11.
+
+#### Relation to Other ADRs
+
+- ADR-020: Vector-component bilinear interpolation for wind direction — PRESERVED.
+  Used only in `renderWindDirectionWithInterpolation` (may be retained for internal use).
+  Popup display and verification methodology are unaffected.
+- ADR-019: Schema v4.0 binary layout — unchanged.
+- ADR-022: All 4 binaries loaded at startup — unchanged; WindArrowOverlay reads from store.

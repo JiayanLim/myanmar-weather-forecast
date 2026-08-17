@@ -7,6 +7,7 @@
 **Revised**: 2026-08-12 v4 (draft) — MAJOR: new target 7-day / 4-variable / ERA5 init / model TBD
 **Revised**: 2026-08-16 v5 — Section B updated: GCOp confirmed, all TBDs resolved, FRs updated
 **Revised**: 2026-08-17 v6 — FR-N40–N45 COMPLETE; ADR-023 closed; R4/R5 COMPLETE
+**Revised**: 2026-08-17 v7 — FR-W01–FR-W07 rewritten (SVG overlay, R12); ADR-025; FR-N23 updated
 **Status**: LEGACY (v3) deployed. NEW TARGET (v4) R4/R5 COMPLETE — R6 NOT STARTED.
 **Constitution**: `.specify/memory/constitution.md` v3.2.0
 
@@ -237,8 +238,8 @@ Do NOT implement until the forecast pipeline is working and verified.
 - **FR-N22**: Lead time markers at 24h intervals — every 4th frame at 6h step (frames 0,4,8,12,16,20,24,28)
 - **FR-N23**: Variable-aware legend for all four variables with correct units and color scales.
   Scales calibrated to R4 January 2021 validation dataset (see FR-N23a):
-  Precipitation 0–2 mm/hr; Wind Speed 0–30 kt; Wind Direction HSL hue wheel with compass labels;
-  Temperature 15–40 °C.
+  Precipitation 0–2 mm/hr; Wind Speed 0–30 kt; Wind Direction: compass description (no hue raster;
+  arrows are the sole direction encoding); Temperature 15–40 °C.
 
 - **FR-N23a**: Precipitation color scale calibration (R10, 2026-08-17).
   PRECIP_MAX = 2 mm/hr; fully-transparent cutoff at 0.02 mm/hr (norm < 0.002).
@@ -268,33 +269,56 @@ Do NOT implement until the forecast pipeline is working and verified.
   `ForecastStore.ts` MUST hold all 4 Float32Arrays from startup (ADR-022).
   The loading spinner MUST remain until all 4 arrays are available.
 
-#### Wind Vector Overlay Requirements [Phase R11 — 2026-08-17]
+#### Wind Vector Overlay Requirements [Phase R12 — 2026-08-17, supersedes R11]
 
-- **FR-W01**: When wind_speed or wind_direction is the active variable, render a sparse
-  vector field of directional arrows overlaid on the existing color raster using the same
-  overlay canvas. No separate canvas or MapLibre source is required.
+**Note**: Phase R11 (commit 2ee8c60) implemented canvas-drawn arrows with two confirmed defects:
+(1) distribution bug — minimum-length filter suppressed ~P75% of arrows (only southern/coastal
+high-wind points visible); (2) HSL rasterization not user-readable. Phase R12 and ADR-025 replace
+the R11 implementation entirely.
 
-- **FR-W02**: Sampling constant: `WIND_ARROW_GRID_STEP = 3` (initial value).
-  Sample every 3rd model grid point in both latitude and longitude (~27×14 = ~378 candidate points).
-  Confirmed by visual testing at default zoom (5.2) and maxZoom (10).
-  If visually overcrowded at default zoom, increase to 4; if too sparse, decrease to 2.
-  Do not implement adaptive density — use a fixed constant.
+- **FR-W01**: When `wind_speed` or `wind_direction` is the active variable, render a sparse SVG
+  vector field of directional arrows positioned via `map.project([lon, lat])` screen coordinates.
+  The SVG overlay is a sibling `<div>` of the map container div, styled
+  `position: absolute; inset: 0; pointer-events: none`. No canvas drawing for arrows.
+  Recompute on every `map.move` and `map.resize` event.
 
-- **FR-W03**: Calm threshold: grid points where `wind_speed < 2.0 kt` must not render an arrow.
-  This matches `wind_direction_calm_threshold_kt = 2.0 kt` from verification.json.
-  No marker or dot is rendered at calm points.
+- **FR-W01a**: For `wind_direction`: canvas is transparent (no raster rendered). Arrows appear
+  directly over the basemap. The `renderWindDirectionWithInterpolation` HSL raster is retired as
+  the primary view; arrows are the sole direction encoding. The hue-wheel legend is removed.
 
-- **FR-W04**: Arrow direction is the TO direction (where wind blows toward), opposite of the stored
-  meteorological FROM convention. Arrow head rotated by `(stored_direction + 180) mod 360°`.
-  Mandatory direction sanity: 90°FROM east → arrow points west; 180°FROM south → arrow points north.
-  The stored binary values and popup display remain FROM convention (unchanged).
+- **FR-W01b**: For `wind_speed`: retain the existing speed color raster. SVG arrows are overlaid,
+  encoding direction (angle) and relative speed (length).
 
-- **FR-W05**: Arrow length proportional to wind speed. Arrow style: solid filled arrowhead with
-  a short tail. Maximum arrow length: ≤ half the spacing between adjacent arrows to prevent
-  overlap at max speed. Arrow color: white or near-white at ≥80% opacity for contrast against
-  both the color raster and the basemap. Performance: arrow rendering must not cause a noticeable
-  regression against the existing step-transition requirement (< 200ms total). No premature
-  optimization — measure first if needed.
+- **FR-W02**: Sampling: `WIND_ARROW_GRID_STEP = 3`. Sample every 3rd model grid point in both
+  lat and lon. 81×41 → ~27×14 = ~378 candidates before calm filtering. Sampling is uniform in
+  model grid index space. Do not implement adaptive density.
+
+- **FR-W03**: Calm threshold: `wind_speed < 2.0 kt` → no arrow rendered. No dot or marker for
+  calm points. Matches `wind_direction_calm_threshold_kt = 2.0 kt` in verification.json.
+
+- **FR-W04**: Arrow direction: TO direction = `(stored_FROM + 180) mod 360°`.
+  SVG rotation: `transform="rotate(toDeg)"` where 0° = north, clockwise.
+  Mandatory sanity tests (must pass before gate):
+    90°FROM east  → toDeg=270° → SVG rotate(270°) → arrow points west ✓
+    180°FROM south → toDeg=0°  → SVG rotate(0°)   → arrow points north ✓
+    0°FROM north  → toDeg=180° → SVG rotate(180°) → arrow points south ✓
+    270°FROM west → toDeg=90°  → SVG rotate(90°)  → arrow points east ✓
+  Binary values and popup display remain FROM convention (unchanged).
+
+- **FR-W05**: Arrow length scales with wind speed. Any wind ≥ 2 kt MUST produce a visible arrow;
+  no suppress-if-too-short filter. Linear interpolation: 8 CSS px at 2 kt → 22 CSS px at 30 kt.
+  Arrow style: `<line>` shaft + `<polygon>` filled arrowhead. Color: white, 85–90% opacity,
+  stroke-width 1.5–2 px. Arrowhead: filled equilateral or isoceles triangle, 5–8 CSS px.
+  Arrows must be readable over both the speed raster and the basemap at zoom 5.2 through 10.
+
+- **FR-W06**: Geographic distribution acceptance criterion: arrows must be visible across all
+  regions of Myanmar — northern (Kachin/Shan), central (Mandalay), and southern (Yangon/Tenasserim).
+  Visual QA at three zoom levels: default (5.2), mid (7), maximum (10).
+
+- **FR-W07**: Bug record (R11). Distribution failure mechanism documented in ADR-025:
+  `len = (speed/30) × 6.77px`; at median 3.10 kt `len = 0.70px < 2px` → filtered.
+  Effective drawing threshold was ≈8.87 kt (≈P75). Fix: `map.project()` + guaranteed
+  minimum arrow length for any non-calm point.
 
 #### Evaluation Requirements [FR-N40–FR-N45 COMPLETE; FR-N46 FUTURE]
 

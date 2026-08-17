@@ -5,7 +5,7 @@
 
 import {
   DISPLAY_N_LAT, DISPLAY_N_LON, DISPLAY_STEP,
-  DISPLAY_LAT_MAX, DISPLAY_LAT_MIN, DISPLAY_LON_MIN, DISPLAY_LON_MAX,
+  DISPLAY_LAT_MAX, DISPLAY_LAT_MIN, DISPLAY_LON_MIN,
 } from '../geo/mask';
 
 export interface ColorStop {
@@ -222,125 +222,6 @@ export function renderWithInterpolation(
   return rgba;
 }
 
-/**
- * Sampling step for wind arrow overlay (FR-W02).
- * Every WIND_ARROW_GRID_STEP-th model grid point (lat and lon) is considered.
- * Start at 3; adjust to 2 (denser) or 4 (sparser) based on visual testing.
- */
-export const WIND_ARROW_GRID_STEP = 3;
-
-/** Calm-wind threshold below which no arrow is drawn (FR-W03, matches verification calm threshold). */
-const WIND_ARROW_CALM_KT = 2.0;
-
-/**
- * Draw wind arrows onto a canvas 2D context (FR-W01–FR-W05).
- *
- * Arrows represent the TO direction — the direction the wind blows toward —
- * which is opposite to the stored meteorological FROM convention (FR-W04).
- *   Stored: direction FROM which wind blows.
- *   Arrow head points: (stored_direction + 180) mod 360°.
- *   Sanity: 90°FROM east → arrow points west; 180°FROM south → arrow points north.
- *
- * Arrow length is proportional to wind speed (FR-W05).
- * Calm points (speed < 2 kt) produce no arrow (FR-W03).
- *
- * @param ctx           Canvas 2D rendering context
- * @param wsFrame       Wind speed frame [nLatSrc × nLonSrc] in knots
- * @param wdFrame       Wind direction frame [nLatSrc × nLonSrc] in degrees FROM
- * @param modelStep     Native resolution in degrees (e.g. 0.25)
- * @param nLatSrc       Number of source latitude points
- * @param nLonSrc       Number of source longitude points
- * @param canvasPxW     Rendered canvas CSS pixel width (from map projection)
- * @param canvasPxH     Rendered canvas CSS pixel height (from map projection)
- */
-export function drawWindArrows(
-  ctx: CanvasRenderingContext2D,
-  wsFrame: Float32Array,
-  wdFrame: Float32Array,
-  modelStep: number,
-  nLatSrc: number,
-  nLonSrc: number,
-  canvasPxW: number,
-  canvasPxH: number,
-): void {
-  // How many display pixels correspond to one model grid step
-  const pxPerDegLon = canvasPxW / (DISPLAY_LON_MAX - DISPLAY_LON_MIN);
-  const pxPerDegLat = canvasPxH / (DISPLAY_LAT_MAX - DISPLAY_LAT_MIN);
-  const arrowSpacingPx = modelStep * WIND_ARROW_GRID_STEP * Math.min(pxPerDegLon, pxPerDegLat);
-  // Max arrow body length: half the inter-arrow spacing
-  const maxSpeedKt = WIND_MAX; // 30 kt
-  const maxLen = arrowSpacingPx * 0.45;
-
-  const DEG2RAD = Math.PI / 180;
-
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.fillStyle   = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth   = 1.2;
-  ctx.lineCap     = 'round';
-
-  for (let latIdx = 0; latIdx < nLatSrc; latIdx += WIND_ARROW_GRID_STEP) {
-    for (let lonIdx = 0; lonIdx < nLonSrc; lonIdx += WIND_ARROW_GRID_STEP) {
-      const i = latIdx * nLonSrc + lonIdx;
-      const speed = wsFrame[i];
-      const fromDir = wdFrame[i];
-
-      // Skip calm or invalid points (FR-W03)
-      if (!isFinite(speed) || !isFinite(fromDir) || speed < WIND_ARROW_CALM_KT) continue;
-
-      // Compute canvas pixel position for this grid point
-      // lat[latIdx] = DISPLAY_LAT_MIN + latIdx * modelStep (ascending south→north)
-      const lat = DISPLAY_LAT_MIN + latIdx * modelStep;
-      const lon = DISPLAY_LON_MIN + lonIdx * modelStep;
-      // Canvas row 0 = DISPLAY_LAT_MAX (north top)
-      const cx = (lon - DISPLAY_LON_MIN) / (DISPLAY_LON_MAX - DISPLAY_LON_MIN) * canvasPxW;
-      const cy = (DISPLAY_LAT_MAX - lat) / (DISPLAY_LAT_MAX - DISPLAY_LAT_MIN) * canvasPxH;
-
-      // Arrow TO direction = FROM + 180° (FR-W04)
-      const toDir = (fromDir + 180) % 360;
-      // Convert meteorological angle to math angle:
-      // Met: 0°=N, 90°=E, clockwise. Math: 0°=East, counterclockwise.
-      // Math angle = 90° - toDir (in degrees), then to radians
-      const mathRad = (90 - toDir) * DEG2RAD;
-
-      // Arrow length proportional to speed
-      const len = Math.min(maxLen, (speed / maxSpeedKt) * maxLen);
-      if (len < 2) continue; // too short to draw
-
-      const dx = Math.cos(mathRad) * len;
-      const dy = -Math.sin(mathRad) * len; // canvas y is flipped
-
-      // Tail point, head point
-      const tx = cx - dx * 0.5;
-      const ty = cy - dy * 0.5;
-      const hx = cx + dx * 0.5;
-      const hy = cy + dy * 0.5;
-
-      // Draw shaft
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(hx, hy);
-      ctx.stroke();
-
-      // Draw arrowhead (filled triangle)
-      const headLen = Math.max(3, len * 0.35);
-      const headAngle = 0.45; // radians (~26°)
-      const ax1 = hx - headLen * Math.cos(mathRad - headAngle);
-      const ay1 = hy + headLen * Math.sin(mathRad - headAngle);
-      const ax2 = hx - headLen * Math.cos(mathRad + headAngle);
-      const ay2 = hy + headLen * Math.sin(mathRad + headAngle);
-
-      ctx.beginPath();
-      ctx.moveTo(hx, hy);
-      ctx.lineTo(ax1, ay1);
-      ctx.lineTo(ax2, ay2);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
-
-  ctx.restore();
-}
 
 /**
  * Render wind direction at display resolution using vector-component bilinear

@@ -24,37 +24,36 @@ function tickPosition(val: number, min: number, max: number): number {
   return ((val - min) / (max - min)) * 100;
 }
 
-/** Wind direction legend: a hue-cycle gradient (N→E→S→W→N) with compass labels. */
+/** Wind direction legend: compass description; arrows are the sole direction encoding (FR-W01a). */
 function WindDirectionLegend() {
-  // HSL hue = direction in degrees (N=0°/360°=red, E=90°=yellow-green, S=180°=cyan, W=270°=blue)
-  const gradient =
-    'linear-gradient(to right, hsl(0,85%,50%), hsl(90,85%,50%), hsl(180,85%,50%), hsl(270,85%,50%), hsl(360,85%,50%))';
-  const compassPoints = [
-    { label: 'N', pos: 0 },
-    { label: 'E', pos: 25 },
-    { label: 'S', pos: 50 },
-    { label: 'W', pos: 75 },
-    { label: 'N', pos: 100 },
-  ];
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-slate-400">Wind Direction (FROM)</span>
-        <span className="text-[10px] text-slate-500">circular scale</span>
+        <span className="text-[10px] text-slate-500">arrow overlay</span>
       </div>
-      <div className="relative h-3 rounded" style={{ background: gradient }}>
-        {compassPoints.map(({ label, pos }) => (
-          <div
-            key={`${label}-${pos}`}
-            className="absolute top-full mt-0.5 text-[9px] text-slate-400 -translate-x-1/2"
-            style={{ left: `${pos}%` }}
-          >
-            {label}
+      {/* Compass rose: four cardinal arrow indicators */}
+      <div className="flex items-center justify-center gap-4 py-1">
+        {[
+          { label: 'N', angle: 180, desc: 'N wind → S' },
+          { label: 'E', angle: 270, desc: 'E wind → W' },
+          { label: 'S', angle: 0,   desc: 'S wind → N' },
+          { label: 'W', angle: 90,  desc: 'W wind → E' },
+        ].map(({ label, angle }) => (
+          <div key={label} className="flex flex-col items-center gap-0.5">
+            <svg width="16" height="16" viewBox="-8 -8 16 16" aria-hidden="true">
+              <g transform={`rotate(${angle})`}>
+                <line x1="0" y1="5" x2="0" y2="-5" stroke="white" strokeOpacity="0.85" strokeWidth="1.5" strokeLinecap="round"/>
+                <polygon points="0,-5 -2.5,-1 2.5,-1" fill="white" fillOpacity="0.85"/>
+              </g>
+            </svg>
+            <span className="text-[9px] text-slate-400">{label}</span>
           </div>
         ))}
       </div>
-      <div className="mt-3 text-[9px] text-slate-500">
-        Meteorological FROM direction · vector interpolation
+      <div className="text-[9px] text-slate-500 leading-tight">
+        Arrows point <span className="text-slate-300">toward</span> wind destination ·
+        meteorological FROM convention · calm &lt; 2 kt hidden
       </div>
     </div>
   );

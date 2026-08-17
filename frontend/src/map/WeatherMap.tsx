@@ -4,12 +4,11 @@ import { useForecastStore } from '../data/ForecastStore';
 import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoader';
 import {
   renderWithInterpolation,
-  renderWindDirectionWithInterpolation,
-  drawWindArrows,
   PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX,
   TEMP_LUT,        TEMP_MIN,   TEMP_MAX,
   WIND_LUT_ALPHA,  WIND_MIN,   WIND_MAX,
 } from './colorscales';
+import { WindArrowOverlay } from './WindArrowOverlay';
 import { DISPLAY_N_LAT, DISPLAY_N_LON } from '../geo/mask';
 
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
@@ -143,27 +142,27 @@ export function WeatherMap() {
     // MODEL_STEP derived at runtime from metadata (ADR-019 / FR-N11)
     const modelStep = metadata.native_resolution_deg;
 
-    let rgba: Uint8ClampedArray;
-
-    if (activeVariable === 'wind_direction' && windDirection) {
-      const frame = getFrame(windDirection, currentHour, n_lat, n_lon);
-      // Vector-component bilinear interpolation (ADR-020) — raw degrees never interpolated
-      rgba = renderWindDirectionWithInterpolation(frame, modelStep, n_lat, n_lon, mask);
-    } else {
-      const [data, lut, vmin, vmax] =
-        activeVariable === 'temperature' && temperature
-          ? [temperature, TEMP_LUT,       TEMP_MIN, TEMP_MAX]
-          : activeVariable === 'wind_speed' && windSpeed
-          ? [windSpeed,   WIND_LUT_ALPHA, WIND_MIN, WIND_MAX]
-          : precipitation
-          ? [precipitation, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX]
-          : [null, null, 0, 1];
-
-      if (!data || !lut) return;
-
-      const frame = getFrame(data, currentHour, n_lat, n_lon);
-      rgba = renderWithInterpolation(frame, lut, vmin, vmax, modelStep, n_lat, n_lon, mask);
+    // wind_direction view: no raster — SVG arrows (WindArrowOverlay) over basemap (FR-W01a)
+    if (activeVariable === 'wind_direction') {
+      canvas.width  = DISPLAY_N_LON;
+      canvas.height = DISPLAY_N_LAT;
+      // Leave canvas transparent; arrows rendered by WindArrowOverlay SVG overlay
+      return;
     }
+
+    const [data, lut, vmin, vmax] =
+      activeVariable === 'temperature' && temperature
+        ? [temperature, TEMP_LUT,       TEMP_MIN, TEMP_MAX]
+        : activeVariable === 'wind_speed' && windSpeed
+        ? [windSpeed,   WIND_LUT_ALPHA, WIND_MIN, WIND_MAX]
+        : precipitation
+        ? [precipitation, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX]
+        : [null, null, 0, 1];
+
+    if (!data || !lut) return;
+
+    const frame = getFrame(data, currentHour, n_lat, n_lon);
+    const rgba = renderWithInterpolation(frame, lut, vmin, vmax, modelStep, n_lat, n_lon, mask);
 
     canvas.width  = DISPLAY_N_LON;
     canvas.height = DISPLAY_N_LAT;
@@ -173,20 +172,10 @@ export function WeatherMap() {
         new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), DISPLAY_N_LON, DISPLAY_N_LAT),
         0, 0,
       );
-
-      // Wind arrow overlay (FR-W01–FR-W05): draw on top of raster when wind is active
-      if ((activeVariable === 'wind_speed' || activeVariable === 'wind_direction')
-          && windSpeed && windDirection) {
-        const wsFrame = getFrame(windSpeed,   currentHour, n_lat, n_lon);
-        const wdFrame = getFrame(windDirection, currentHour, n_lat, n_lon);
-        // Canvas intrinsic size = DISPLAY_N_LON × DISPLAY_N_LAT pixels,
-        // matching the raster — pass these as the "canvas pixel" dimensions.
-        drawWindArrows(ctx, wsFrame, wdFrame, modelStep, n_lat, n_lon, DISPLAY_N_LON, DISPLAY_N_LAT);
-      }
     }
 
     if (map) positionOverlay(map, metadata);
-  }, [isLoaded, metadata, currentHour, precipitation, temperature, windSpeed, windDirection, activeVariable, mask]);
+  }, [isLoaded, metadata, currentHour, precipitation, temperature, windSpeed, activeVariable, mask]);
 
   // Point inspector popup
   useEffect(() => {
@@ -310,6 +299,8 @@ export function WeatherMap() {
           display: isLoaded ? 'block' : 'none',
         }}
       />
+      {/* SVG wind arrow overlay (FR-W01–FR-W07, ADR-025) — replaces R11 canvas arrows */}
+      <WindArrowOverlay map={mapRef.current} />
     </div>
   );
 }

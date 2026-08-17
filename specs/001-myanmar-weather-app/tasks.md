@@ -6,6 +6,7 @@
 **Revised**: 2026-08-16 v5 — Schema v4.0 locked; GCOp confirmed; RS tasks added; timings corrected
 **Revised**: 2026-08-17 v6 — R4 COMPLETE; R044 PASS; RS10 COMPLETE; R5 COMPLETE; ADR-023 closed
 **Revised**: 2026-08-17 v7 — R6 COMPLETE (types+loader+store+all components+build); R7 COMPLETE; R8 COMPLETE
+**Revised**: 2026-08-17 v8 — R10 COMPLETE; R11 COMPLETE (superseded by R12 — defect); R12 tasks added
 
 ---
 
@@ -441,95 +442,117 @@ All R7 tasks completed as part of the unified R6 authorization. See Phase R6 abo
 
 ---
 
-## Phase R10: Precipitation Color Scale Calibration — NOT STARTED
+## Phase R10: Precipitation Color Scale Calibration — COMPLETE (2026-08-17)
 
-**Classification**: Display defect fix. No backend, data, or Spec Kit changes beyond spec.md FR-N23a.
-**Prerequisite**: Binary spot-check PASSED (2026-08-17) — all values confirmed, 385,236 bytes/file.
+**Classification**: Display defect fix.
+**Commit**: 2ee8c60
 
-- [ ] R10a Confirm binary spot-check results before touching any code:
-      - Yangon/Mandalay test points read zero (dry season expected) ✓
-      - Max = 1.62 mm/hr < PRECIP_MAX=2 → no saturation (perfect fit) ✓
-      - 12.2% of field > 0.02 mm/hr → will become visible after fix ✓
-      - Old cutoff suppressed 94.8% of field; new cutoff suppresses 87.8% (noise only) ✓
-      - Frame offset formula verified for temperature/wind (lat ascending, offset = f×81×41) ✓
+- [x] R10a Binary spot-check confirmed (385,236 bytes/file, max=1.62 mm/hr < 2, 12.2% > 0.02 mm/hr)
+- [x] R10b colorscales.ts: PRECIP_MAX 10→2; ramp cutoff norm<0.01; PRECIP_TICKS updated
+- [x] R10c Legend.tsx: dry-season calibration note in tooltip
+- [x] R10d tsc 0 errors; build passes
+- [x] R10e Committed and pushed (2ee8c60); GitHub Pages redeployed ✓
 
-- [ ] R10b Edit `frontend/src/map/colorscales.ts`:
-      - `PRECIP_MAX`: 10 → 2
-      - `PRECIP_LUT_ALPHA` ramp: change `norm < 0.02` (= 0.2 mm/hr at old scale) to
-        `norm < 0.01` (= 0.02 mm/hr at new scale); adjust partial-ramp upper bound accordingly
-      - `PRECIP_TICKS`: [0, 0.5, 1, 2, 5, 10] → [0, 0.1, 0.25, 0.5, 1.0, 2.0]
-
-- [ ] R10c Edit `frontend/src/components/Legend.tsx`:
-      - Update precipitation tick display to show [0, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr
-      - Add dry-season calibration note (e.g., "calibrated for Jan 2021 dry season · >2 mm/hr saturates")
-
-- [ ] R10d Validate:
-      - `npx tsc --noEmit` → 0 errors
-      - `npm run build` → passes
-      - Visual: values > 0.02 mm/hr (P95 = 0.084 mm/hr) now visible on map
-      - Visual: max value (1.62 mm/hr) renders as a distinct non-white color
-      - Visual: zero-precip areas remain transparent
-
-- [ ] R10e Commit and push to main; confirm GitHub Pages redeploy succeeds.
-
-**Gate**: tsc 0 errors; build passes; precipitation field visible at P95+ values; deployed.
+**Gate**: PASSED.
 
 ---
 
-## Phase R11: Wind Vector Arrow Overlay — NOT STARTED
+## Phase R11: Wind Vector Arrow Overlay — COMPLETE / SUPERSEDED (2026-08-17)
 
-**Classification**: New UX requirement (FR-W01–FR-W05).
-**Prerequisite**: Phase R10 complete.
+**Commit**: 2ee8c60
+**Status**: SUPERSEDED by Phase R12. Two defects confirmed post-deployment (ADR-025):
 
-- [ ] R11a Spec confirmation:
-      - FR-W01–FR-W05 approved and locked in spec.md ✓
-      - WIND_ARROW_GRID_STEP = 3 (initial candidate)
-      - Calm threshold: wind_speed < 2.0 kt → no arrow
-      - Arrow direction: TO = (FROM + 180) mod 360°
-      - Sanity tests: 90°FROM E → arrow points W; 180°FROM S → arrow points N
+1. **Distribution defect**: arrows appeared only at bottom (southern Myanmar). Root cause:
+   `if (len < 2) continue` with maxLen≈6.77px; at January median 3.10 kt, len=0.70px → filtered.
+   Effective draw threshold ≈8.87 kt (≈P75+).
 
-- [ ] R11b Implement `renderWindArrows` function in `frontend/src/map/colorscales.ts`:
-      - Inputs: windSpeed frame, windDirection frame, modelStep, nLatSrc, nLonSrc, canvas ctx (or rgba)
-      - Sample every WIND_ARROW_GRID_STEP-th model grid point in lat and lon
-      - Skip calm points (speed < 2.0 kt)
-      - Compute screen pixel coordinates for each sampled grid point
-      - Arrow angle: (stored_direction + 180) mod 360°
-      - Arrow length: proportional to speed; max length ≤ half inter-arrow spacing
-      - Draw with canvas 2D context (ctx.beginPath, ctx.moveTo, ctx.lineTo, ctx.fill)
+2. **HSL rasterization**: hue-based wind_direction coloring not user-readable.
 
-- [ ] R11c Integrate in `frontend/src/map/WeatherMap.tsx`:
-      - Call renderWindArrows after the main canvas draw when activeVariable is wind_speed or wind_direction
-      - Pass modelStep, n_lat, n_lon, current frame arrays, canvas ctx
-      - Do not create a separate canvas
+- [x] R11a Spec confirmed (FR-W01–FR-W05, WIND_ARROW_GRID_STEP=3, calm threshold=2 kt) ✓
+- [SUPERSEDED] R11b drawWindArrows() in colorscales.ts — implemented; distribution defect identified
+- [SUPERSEDED] R11c WeatherMap.tsx integration — implemented; visual defect confirmed
+- [SUPERSEDED] R11d Visual test at zoom 5.2 — arrows appeared only at bottom (defect confirmed)
+- [SUPERSEDED] R11e Visual test at zoom 10 — not performed (defect requires architectural fix)
+- [SUPERSEDED] R11f Direction sanity — math verified (formula correct); visual layout defective
+- [x] R11g tsc 0 errors; npm run build passes ✓
+- [x] R11h Committed 2ee8c60; deployed ✓
 
-- [ ] R11d Visual test at default zoom (5.2):
-      - Arrows legible; not overcrowded; no occlusion
-      - If overcrowded: increase WIND_ARROW_GRID_STEP to 4 and re-test
+**Gate**: PARTIALLY PASSED — TypeScript/build OK; visual distribution FAILED → Phase R12 required.
+
+---
+
+## Phase R12: SVG Wind Arrow Overlay — NOT STARTED
+
+**Classification**: Defect fix + UX improvement. Replaces Phase R11.
+**Prerequisite**: R10 COMPLETE ✓; ADR-025 ACCEPTED ✓; R11 defects documented ✓.
+**Spec**: FR-W01–FR-W07 (spec.md v7).
+
+- [ ] R12a Spec and architecture review:
+      - FR-W01–FR-W07 locked in spec.md v7 ✓; ADR-025 in research.md ✓
+      - Architecture: SVG overlay div + map.project() + guaranteed min arrow length
+      - WIND_ARROW_GRID_STEP = 3; calm threshold 2.0 kt; toDeg = (fromDir+180) % 360
+
+- [ ] R12b Create `frontend/src/map/WindArrowOverlay.tsx`:
+      - Props: `{ map: maplibregl.Map | null }`
+      - Reads from store: windSpeed, windDirection, currentHour, metadata, activeVariable, isLoaded
+      - Computes arrows array on change: map.project([lon, lat]) → {x, y, toDeg, len}
+      - len = lerp(8, 22, clamp((speed - 2) / 28, 0, 1)) CSS px; any speed ≥ 2 kt → len ≥ 8 px
+      - SVG: `<svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible">`
+      - Per arrow: `<g key transform="translate(x,y) rotate(toDeg)">` containing shaft + head
+      - Shaft: `<line x1="0" y1="2" x2="0" y2="-len" stroke="white" strokeOpacity="0.85" strokeWidth="1.5"/>`
+      - Head: `<polygon points="0,-len -3,-len+6 3,-len+6" fill="white" fillOpacity="0.85"/>`
+      - Only render when `activeVariable === 'wind_speed' || 'wind_direction'`
+      - Recompute on map.move and map.resize events
+
+- [ ] R12c Update `frontend/src/map/WeatherMap.tsx`:
+      - Import WindArrowOverlay
+      - Remove `drawWindArrows` import and call from draw effect
+      - For wind_direction activeVariable: skip canvas raster (do not call renderWindDirectionWithInterpolation)
+        — or render a neutral transparent canvas (either approach; blank canvas acceptable)
+      - Pass `mapRef.current` to `<WindArrowOverlay map={mapRef.current} />`
+      - Place WindArrowOverlay in returned JSX alongside map div and canvas
+
+- [ ] R12d Remove `drawWindArrows` from `frontend/src/map/colorscales.ts`:
+      - Remove the function body and export
+      - Remove `WIND_ARROW_GRID_STEP` and `WIND_ARROW_CALM_KT` constants
+      - Keep all other exports unchanged (renderWindDirectionWithInterpolation may be retained or removed)
+
+- [ ] R12e Update `frontend/src/components/Legend.tsx`:
+      - Remove WindDirectionLegend hue-wheel gradient component
+      - Replace with a simple text description: "Wind direction shown by arrows (TO direction)"
+        with a minimal compass icon or N/E/S/W labels
+
+- [ ] R12f Direction sanity tests (all four cardinal directions + Yangon + Mandalay):
+      - 90°FROM east  → toDeg=270° → SVG rotate(270°) → arrow points left (west) ✓
+      - 180°FROM south → toDeg=0°  → SVG rotate(0°)   → arrow points up (north) ✓
+      - 0°FROM north  → toDeg=180° → SVG rotate(180°) → arrow points down (south) ✓
+      - 270°FROM west → toDeg=90°  → SVG rotate(90°)  → arrow points right (east) ✓
+      - Yangon frame 0: popup ~95°FROM east → arrow points ~west (toDeg≈275°) ✓
+      - Mandalay frame 0: popup ~79°FROM → arrow points ~SW (toDeg≈259°) ✓
+
+- [ ] R12g Visual QA — geographic distribution (must cover full Myanmar domain):
+      - zoom 5.2: arrows visible in northern Myanmar (Kachin/Shan ~25–28°N)
+      - zoom 5.2: arrows visible in central Myanmar (Mandalay ~22°N)
+      - zoom 5.2: arrows visible in southern Myanmar (Yangon ~17°N, Tenasserim ~10–14°N)
+      - zoom 7: density appropriate; not overcrowded, not too sparse
+      - zoom 10: arrows readable; individual arrows not overlapping excessively
+      - If overcrowded at default zoom: increase WIND_ARROW_GRID_STEP to 4 and re-test
       - If too sparse: decrease to 2 and re-test
-      - Record final WIND_ARROW_GRID_STEP value
 
-- [ ] R11e Visual test at maxZoom (10):
-      - Arrows still legible at higher resolution
-      - Calm points produce no arrow
+- [ ] R12h Performance check:
+      - Step through all 29 frames at 4× playback speed
+      - No visible lag or stutter between frames
+      - Accept if step transition < 200ms; profile before optimizing if exceeded
 
-- [ ] R11f Direction sanity test using popup:
-      - Click Yangon at frame 0: popup shows ~95°FROM east → arrow should point ~west (275°)
-      - Click Mandalay at frame 0: popup shows ~79°FROM NE → arrow should point ~SW (259°)
-      - Confirm arrow head direction matches computed TO direction
-
-- [ ] R11g Performance check:
-      - Step through all 29 frames during playback (speed 4×)
-      - Confirm no visible lag or stutter
-      - If any frame transition exceeds 200ms, profile and report before optimizing
-
-- [ ] R11h Validate:
+- [ ] R12i Validate:
       - `npx tsc --noEmit` → 0 errors
       - `npm run build` → passes
-      - All sanity tests passed
+      - All direction sanity tests pass (R12f)
+      - Geographic distribution confirmed (R12g)
 
-- [ ] R11i Commit and push to main; confirm GitHub Pages redeploy succeeds.
+- [ ] R12j Commit and push to main; confirm GitHub Pages redeploy succeeds.
 
-**Gate**: tsc 0 errors; build passes; arrows correctly oriented; calm suppressed; no regression; deployed.
+**Gate**: tsc 0 errors; build passes; full-domain distribution confirmed; all cardinal sanity tests pass; no step-transition regression; deployed.
 
 ---
 
@@ -561,9 +584,11 @@ R001–R009 (research) → R010 (MODEL SELECTION GATE) → ...
                                                         ↓
                                          USER APPROVAL → R100–R109 (deploy)
                                                         ↓
-                                         R10a–R10e (precip calibration fix)
+                                         R10a–R10e (precip calibration fix) ← COMPLETE
                                                         ↓
-                                         R11a–R11i (wind arrow overlay)
+                         R11a–R11i (canvas arrows, commit 2ee8c60) ← SUPERSEDED
+                                                        ↓
+                                         R12a–R12j (SVG wind arrow overlay)
 ```
 
 ---
