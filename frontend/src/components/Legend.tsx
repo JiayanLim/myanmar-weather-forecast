@@ -89,6 +89,8 @@ export function Legend() {
               <div className="absolute bottom-5 right-0 hidden group-hover:block bg-wx-panel border border-wx-border rounded p-2 text-[10px] text-slate-300 w-56 z-50 shadow-lg">
                 Estimated average rainfall rate for each 6-hour period.
                 Derived from GCOp tp06 output (metres/6h × 1000 / 6 → mm/hr, clamped ≥ 0).
+                Scale calibrated for January 2021 dry season (max observed: 1.62 mm/hr).
+                Values above 2 mm/hr saturate — rescale before serving wet-season forecasts.
               </div>
             </div>
           </>

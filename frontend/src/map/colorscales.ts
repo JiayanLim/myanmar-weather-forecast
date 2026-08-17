@@ -54,10 +54,13 @@ export const TEMP_LUT = buildLUT([
   { pos: 1.00, r: 165, g: 0,   b: 38  }, // 40°C  dark red
 ]);
 
-// Precipitation: near-transparent → cyan → blue → green → yellow → red (0 to 10 mm/hr)
+// Precipitation: near-transparent → cyan → blue → green → yellow → red (0 to 2 mm/hr)
 // v4.0 unit: mm/hr (estimated average rainfall rate)
+// Scale calibrated for January 2021 dry-season dataset (FR-N23a):
+//   max observed = 1.62 mm/hr (no saturation); P95 = 0.084 mm/hr (visible above cutoff).
+//   Monsoon-season data may saturate above 2 mm/hr — recalibration required for wet-season use.
 export const PRECIP_MIN = 0;
-export const PRECIP_MAX = 10;
+export const PRECIP_MAX = 2;
 export const PRECIP_LUT = buildLUT([
   { pos: 0.00, r: 255, g: 255, b: 255 }, // 0       white
   { pos: 0.05, r: 200, g: 230, b: 255 }, // 0.5     pale blue
@@ -70,13 +73,15 @@ export const PRECIP_LUT = buildLUT([
   { pos: 1.00, r: 200, g: 0,   b: 0   }, // 10+     red
 ]);
 
-// Near-zero precipitation rendered as mostly transparent
+// Near-zero precipitation rendered as fully transparent (noise suppression).
+// Cutoff: norm < 0.01 → transparent (= 0.02 mm/hr at PRECIP_MAX=2).
+// Ramp: norm 0.01–0.05 → partial opacity (= 0.02–0.10 mm/hr). Above 0.05 → full opacity.
 export const PRECIP_LUT_ALPHA = (() => {
   const lut = new Uint8ClampedArray(PRECIP_LUT);
   const size = lut.length / 4;
   for (let i = 0; i < size; i++) {
     const norm = i / (size - 1);
-    const alpha = norm < 0.02 ? 0 : norm < 0.08 ? Math.round((norm - 0.02) / 0.06 * 200) : 200;
+    const alpha = norm < 0.01 ? 0 : norm < 0.05 ? Math.round((norm - 0.01) / 0.04 * 200) : 200;
     lut[i * 4 + 3] = alpha;
   }
   return lut;
@@ -108,7 +113,7 @@ export const WIND_LUT_ALPHA = (() => {
 })();
 
 export const TEMP_TICKS   = [15, 20, 25, 30, 35, 40];
-export const PRECIP_TICKS = [0, 0.5, 1, 2, 5, 10];
+export const PRECIP_TICKS = [0, 0.1, 0.25, 0.5, 1.0, 2.0]; // calibrated for Jan 2021 dry season
 export const WIND_TICKS   = [0, 5, 10, 15, 20, 25, 30];
 
 /** HSL to RGB conversion. h in [0,360], s and l in [0,1]. */

@@ -63,7 +63,7 @@ README updated for GraphCastSmall/48h/M4.
 
 ## PART B — NEW TARGET PLAN (v4.0 — 2026-08-17)
 
-**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). RS10 COMPLETE. RS11–RS14 DEFERRED (ADR-024 — data/forecast_v4/ is authoritative production dataset). Live on GitHub Pages (commit 30ff08c).
+**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). RS10 COMPLETE. RS11–RS14 DEFERRED (ADR-024). R10 (precipitation calibration) and R11 (wind arrows) AUTHORIZED — NOT STARTED. Live on GitHub Pages (commit 30ff08c).
 
 **Model**: GraphCastOperational (0.25°, JAX/Haiku, ARCO/ERA5 init)
 **R3 result**: PASS — M4 24 GB, peak RSS 1.99 GB post-compile, JIT cold ~27–34 min
@@ -333,6 +333,69 @@ See Phase 6. ModelEvaluation.tsx rewritten for verification.json schema v2.0.
 - Confirm is_demo=false on production
 
 **Gate**: Live site shows correct model, 2021-01-01 init, 7-day timeline, 4 variables, no errors.
+
+---
+
+### Phase R10: Precipitation Color Scale Calibration — NOT STARTED
+
+**Classification**: Implementation defect fix (display calibration).
+**Prerequisite**: Binary spot-check passed (confirmed 2026-08-17 — see pre-R10 analysis).
+**Scope**: `frontend/src/map/colorscales.ts` and `frontend/src/components/Legend.tsx` only.
+No data files, verification.json, or backend scripts are modified.
+
+**Objective**: Make the precipitation field visible for the January 2021 dry-season dataset.
+The existing PRECIP_MAX=10 mm/hr and transparency ramp suppress 95% of the field (P95=0.084 mm/hr < old 0.2 mm/hr cutoff). After calibration, 12.2% of the field will be visible (values > 0.02 mm/hr).
+
+**Changes** (per FR-N23a):
+- `PRECIP_MAX`: 10 → 2 mm/hr
+- Alpha ramp: `norm < 0.02 → 0` threshold reduces to `norm < 0.01` (= 0.02 mm/hr at new scale)
+- `PRECIP_TICKS`: [0, 0.5, 1, 2, 5, 10] → [0, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr
+- Legend label: add "dry-season calibration" note (per FR-N23a)
+
+**Validation**:
+- tsc 0 errors
+- npm run build passes
+- P95 (0.084 mm/hr) visible
+- Max (1.62 mm/hr) distinguishable
+- Values ≤ 0.02 mm/hr fully transparent
+
+**Gate**: tsc 0 errors; build passes; all visual criteria met; commit to main + push.
+
+---
+
+### Phase R11: Wind Vector Arrow Overlay — NOT STARTED
+
+**Classification**: New UX requirement (FR-W01–FR-W05, spec.md Section B).
+**Prerequisite**: Phase R10 complete.
+**Scope**: `frontend/src/map/colorscales.ts` and `frontend/src/map/WeatherMap.tsx`.
+
+**Objective**: Add directional arrows overlaid on the wind_speed and wind_direction rasters
+to make wind flow patterns directly readable without requiring variable-switching.
+
+**Key decisions** (per approved amendments):
+- `WIND_ARROW_GRID_STEP = 3` (initial; adjust to 2 or 4 based on visual testing)
+- Calm threshold: wind_speed < 2.0 kt → no arrow (matches verification calm threshold)
+- Arrow direction: TO direction = (stored_FROM + 180) mod 360°
+- Arrow length: proportional to wind speed; max length ≤ half inter-arrow spacing
+- Rendered on same canvas as color raster (no separate layer)
+
+**Direction sanity tests** (required before gate):
+- 90°FROM east → arrow points west ✓
+- 180°FROM south → arrow points north ✓
+- Popup values used as independent ground truth
+
+**Performance**: Measure step-transition time before and after. Accept if < 200ms total.
+No premature optimization around an isolated draw time.
+
+**Validation**:
+- tsc 0 errors
+- npm run build passes
+- Arrows visible and correctly oriented at zoom 5.2 and zoom 10
+- Calm grid points: no arrow rendered
+- Popup values match arrow orientation
+- No step-transition regression
+
+**Gate**: tsc 0 errors; build passes; all visual + sanity criteria met; commit to main + push.
 
 ---
 

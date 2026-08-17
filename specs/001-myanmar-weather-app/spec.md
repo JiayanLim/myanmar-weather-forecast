@@ -236,8 +236,19 @@ Do NOT implement until the forecast pipeline is working and verified.
 - **FR-N21**: Timeline derived dynamically from forecast.json (n_times=29, native_timestep_hours=6)
 - **FR-N22**: Lead time markers at 24h intervals — every 4th frame at 6h step (frames 0,4,8,12,16,20,24,28)
 - **FR-N23**: Variable-aware legend for all four variables with correct units and color scales.
-  Precipitation 0–20 mm/hr; Wind Speed 0–50 kt; Wind Direction color wheel with compass labels;
+  Scales calibrated to R4 January 2021 validation dataset (see FR-N23a):
+  Precipitation 0–2 mm/hr; Wind Speed 0–30 kt; Wind Direction HSL hue wheel with compass labels;
   Temperature 15–40 °C.
+
+- **FR-N23a**: Precipitation color scale calibration (R10, 2026-08-17).
+  PRECIP_MAX = 2 mm/hr; fully-transparent cutoff at 0.02 mm/hr (norm < 0.002).
+  Rationale: R4 January 2021 data maximum = 1.62 mm/hr (no saturation at PRECIP_MAX=2);
+  P95 = 0.084 mm/hr (visible above cutoff); median ≈ 0.0003 mm/hr (correctly suppressed as noise).
+  Ticks: [0, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr.
+  This is a display calibration, not a physical upper bound on Myanmar precipitation.
+  Monsoon-season data routinely exceeds 2 mm/hr; recalibration will be required before
+  serving wet-season forecasts. The color scale MUST be documented as dry-season calibrated
+  in the legend or info panel.
 - **FR-N24**: Popup displays all four variable values at clicked grid point for current step
 - **FR-N25**: Header: "Myanmar 7-Day AI Weather Forecast" (derived from forecast_horizon_hours=168)
 - **FR-N26**: Info panel: model, 0.25° resolution (~28 km), timestep, init time (2021-01-01T00Z),
@@ -256,6 +267,34 @@ Do NOT implement until the forecast pipeline is working and verified.
 - **FR-N13**: `ForecastLoader.ts` MUST fetch all 4 binary files in parallel using `Promise.all`.
   `ForecastStore.ts` MUST hold all 4 Float32Arrays from startup (ADR-022).
   The loading spinner MUST remain until all 4 arrays are available.
+
+#### Wind Vector Overlay Requirements [Phase R11 — 2026-08-17]
+
+- **FR-W01**: When wind_speed or wind_direction is the active variable, render a sparse
+  vector field of directional arrows overlaid on the existing color raster using the same
+  overlay canvas. No separate canvas or MapLibre source is required.
+
+- **FR-W02**: Sampling constant: `WIND_ARROW_GRID_STEP = 3` (initial value).
+  Sample every 3rd model grid point in both latitude and longitude (~27×14 = ~378 candidate points).
+  Confirmed by visual testing at default zoom (5.2) and maxZoom (10).
+  If visually overcrowded at default zoom, increase to 4; if too sparse, decrease to 2.
+  Do not implement adaptive density — use a fixed constant.
+
+- **FR-W03**: Calm threshold: grid points where `wind_speed < 2.0 kt` must not render an arrow.
+  This matches `wind_direction_calm_threshold_kt = 2.0 kt` from verification.json.
+  No marker or dot is rendered at calm points.
+
+- **FR-W04**: Arrow direction is the TO direction (where wind blows toward), opposite of the stored
+  meteorological FROM convention. Arrow head rotated by `(stored_direction + 180) mod 360°`.
+  Mandatory direction sanity: 90°FROM east → arrow points west; 180°FROM south → arrow points north.
+  The stored binary values and popup display remain FROM convention (unchanged).
+
+- **FR-W05**: Arrow length proportional to wind speed. Arrow style: solid filled arrowhead with
+  a short tail. Maximum arrow length: ≤ half the spacing between adjacent arrows to prevent
+  overlap at max speed. Arrow color: white or near-white at ≥80% opacity for contrast against
+  both the color raster and the basemap. Performance: arrow rendering must not cause a noticeable
+  regression against the existing step-transition requirement (< 200ms total). No premature
+  optimization — measure first if needed.
 
 #### Evaluation Requirements [FR-N40–FR-N45 COMPLETE; FR-N46 FUTURE]
 

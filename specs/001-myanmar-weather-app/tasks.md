@@ -441,6 +441,98 @@ All R7 tasks completed as part of the unified R6 authorization. See Phase R6 abo
 
 ---
 
+## Phase R10: Precipitation Color Scale Calibration — NOT STARTED
+
+**Classification**: Display defect fix. No backend, data, or Spec Kit changes beyond spec.md FR-N23a.
+**Prerequisite**: Binary spot-check PASSED (2026-08-17) — all values confirmed, 385,236 bytes/file.
+
+- [ ] R10a Confirm binary spot-check results before touching any code:
+      - Yangon/Mandalay test points read zero (dry season expected) ✓
+      - Max = 1.62 mm/hr < PRECIP_MAX=2 → no saturation (perfect fit) ✓
+      - 12.2% of field > 0.02 mm/hr → will become visible after fix ✓
+      - Old cutoff suppressed 94.8% of field; new cutoff suppresses 87.8% (noise only) ✓
+      - Frame offset formula verified for temperature/wind (lat ascending, offset = f×81×41) ✓
+
+- [ ] R10b Edit `frontend/src/map/colorscales.ts`:
+      - `PRECIP_MAX`: 10 → 2
+      - `PRECIP_LUT_ALPHA` ramp: change `norm < 0.02` (= 0.2 mm/hr at old scale) to
+        `norm < 0.01` (= 0.02 mm/hr at new scale); adjust partial-ramp upper bound accordingly
+      - `PRECIP_TICKS`: [0, 0.5, 1, 2, 5, 10] → [0, 0.1, 0.25, 0.5, 1.0, 2.0]
+
+- [ ] R10c Edit `frontend/src/components/Legend.tsx`:
+      - Update precipitation tick display to show [0, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr
+      - Add dry-season calibration note (e.g., "calibrated for Jan 2021 dry season · >2 mm/hr saturates")
+
+- [ ] R10d Validate:
+      - `npx tsc --noEmit` → 0 errors
+      - `npm run build` → passes
+      - Visual: values > 0.02 mm/hr (P95 = 0.084 mm/hr) now visible on map
+      - Visual: max value (1.62 mm/hr) renders as a distinct non-white color
+      - Visual: zero-precip areas remain transparent
+
+- [ ] R10e Commit and push to main; confirm GitHub Pages redeploy succeeds.
+
+**Gate**: tsc 0 errors; build passes; precipitation field visible at P95+ values; deployed.
+
+---
+
+## Phase R11: Wind Vector Arrow Overlay — NOT STARTED
+
+**Classification**: New UX requirement (FR-W01–FR-W05).
+**Prerequisite**: Phase R10 complete.
+
+- [ ] R11a Spec confirmation:
+      - FR-W01–FR-W05 approved and locked in spec.md ✓
+      - WIND_ARROW_GRID_STEP = 3 (initial candidate)
+      - Calm threshold: wind_speed < 2.0 kt → no arrow
+      - Arrow direction: TO = (FROM + 180) mod 360°
+      - Sanity tests: 90°FROM E → arrow points W; 180°FROM S → arrow points N
+
+- [ ] R11b Implement `renderWindArrows` function in `frontend/src/map/colorscales.ts`:
+      - Inputs: windSpeed frame, windDirection frame, modelStep, nLatSrc, nLonSrc, canvas ctx (or rgba)
+      - Sample every WIND_ARROW_GRID_STEP-th model grid point in lat and lon
+      - Skip calm points (speed < 2.0 kt)
+      - Compute screen pixel coordinates for each sampled grid point
+      - Arrow angle: (stored_direction + 180) mod 360°
+      - Arrow length: proportional to speed; max length ≤ half inter-arrow spacing
+      - Draw with canvas 2D context (ctx.beginPath, ctx.moveTo, ctx.lineTo, ctx.fill)
+
+- [ ] R11c Integrate in `frontend/src/map/WeatherMap.tsx`:
+      - Call renderWindArrows after the main canvas draw when activeVariable is wind_speed or wind_direction
+      - Pass modelStep, n_lat, n_lon, current frame arrays, canvas ctx
+      - Do not create a separate canvas
+
+- [ ] R11d Visual test at default zoom (5.2):
+      - Arrows legible; not overcrowded; no occlusion
+      - If overcrowded: increase WIND_ARROW_GRID_STEP to 4 and re-test
+      - If too sparse: decrease to 2 and re-test
+      - Record final WIND_ARROW_GRID_STEP value
+
+- [ ] R11e Visual test at maxZoom (10):
+      - Arrows still legible at higher resolution
+      - Calm points produce no arrow
+
+- [ ] R11f Direction sanity test using popup:
+      - Click Yangon at frame 0: popup shows ~95°FROM east → arrow should point ~west (275°)
+      - Click Mandalay at frame 0: popup shows ~79°FROM NE → arrow should point ~SW (259°)
+      - Confirm arrow head direction matches computed TO direction
+
+- [ ] R11g Performance check:
+      - Step through all 29 frames during playback (speed 4×)
+      - Confirm no visible lag or stutter
+      - If any frame transition exceeds 200ms, profile and report before optimizing
+
+- [ ] R11h Validate:
+      - `npx tsc --noEmit` → 0 errors
+      - `npm run build` → passes
+      - All sanity tests passed
+
+- [ ] R11i Commit and push to main; confirm GitHub Pages redeploy succeeds.
+
+**Gate**: tsc 0 errors; build passes; arrows correctly oriented; calm suppressed; no regression; deployed.
+
+---
+
 ## Dependencies and Execution Order
 
 ```
@@ -468,6 +560,10 @@ R001–R009 (research) → R010 (MODEL SELECTION GATE) → ...
                                               R090–R095 (eval popup)
                                                         ↓
                                          USER APPROVAL → R100–R109 (deploy)
+                                                        ↓
+                                         R10a–R10e (precip calibration fix)
+                                                        ↓
+                                         R11a–R11i (wind arrow overlay)
 ```
 
 ---
