@@ -1,38 +1,19 @@
 """
-verify_forecast.py — Verify Aurora1p5 forecast against ERA5 reanalysis.
+verify_forecast.py — GraphCastOperational Myanmar 7-day forecast verification vs ERA5.
+Schema v2.0. Phase R5.
 
-PURPOSE
--------
-Quantitative comparison of the Aurora1p5+IFS forecast against ERA5 reanalysis
-as an independent reference dataset.
+ERA5/ARCO precipitation confirmed as 1-hour accumulation ending at each timestamp
+(empirically verified 2026-08-16). Six consecutive hourly values summed per 6h GCOp
+window. No cumulative subtraction. No 00Z/12Z seam handling.
 
-IMPORTANT CAVEATS
------------------
-ERA5 is a reanalysis product (model-based, not direct observations). It is the
-best available gridded reference for Myanmar at 0.25° resolution but is not
-"ground truth". Skill scores here measure consistency with ERA5, not absolute
-accuracy against station observations.
+Usage:
+    uv run python scripts/verify_forecast.py \\
+        [--forecast-dir data/forecast_v4] \\
+        [--output-dir data/verification]
 
-ERA5 is produced with ~5-day latency. This script will fail gracefully if ERA5
-data is not yet available for the verification period.
-
-REQUIREMENTS
-------------
-  earth2studio >= 0.17.0 with --extra data (for ERA5/ARCO data access)
-  numpy, xarray, scipy, json
-
-USAGE
------
-  uv run python scripts/verify_forecast.py \
-      [--forecast-dir data/forecast] \
-      [--output-dir data/verification] \
-      [--lead-hours 6 12 24 48 72 96 120 144 168] \
-      [--era5-source arco]
-
-OUTPUT
-------
-  data/verification/verification.json   — machine-readable metrics
-  data/verification/verification.md     — human-readable report
+Exit codes:
+    0 — all checks pass; verification.json written to output-dir
+    1 — any validation failure; verification.json NOT written
 """
 
 from __future__ import annotations
@@ -45,576 +26,682 @@ from pathlib import Path
 
 import numpy as np
 
-MYANMAR_LAT_MIN, MYANMAR_LAT_MAX = 9.0, 29.0
-MYANMAR_LON_MIN, MYANMAR_LON_MAX = 92.0, 102.0
-
-# Default lead times to verify
-DEFAULT_LEAD_HOURS = [6, 12, 24, 48, 72, 96, 120, 144, 168]
-
-# Precipitation thresholds for categorical scores (mm / 1-hour accumulation)
-PRECIP_THRESHOLDS = [0.1, 1.0, 5.0, 10.0]
+ARCO_ZARR = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
+EXPECTED_BYTES = 385_236           # 29 × 81 × 41 × 4
+PRECIP_THRESHOLD_MM_HR = 0.1      # rain/no-rain categorical threshold
+CALM_THRESHOLD_KT = 2.0           # exclude calm ERA5 points from wind-dir MAE
+GRID_TOL = 0.001                  # degrees: lat/lon alignment tolerance
 
 
 # ---------------------------------------------------------------------------
 # Metric functions
 # ---------------------------------------------------------------------------
 
-def mae(fcst: np.ndarray, ref: np.ndarray) -> float:
-    valid = ~(np.isnan(fcst) | np.isnan(ref))
-    return float(np.mean(np.abs(fcst[valid] - ref[valid])))
+def _valid(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return ~(np.isnan(a) | np.isnan(b))
 
 
-def rmse(fcst: np.ndarray, ref: np.ndarray) -> float:
-    valid = ~(np.isnan(fcst) | np.isnan(ref))
-    return float(np.sqrt(np.mean((fcst[valid] - ref[valid]) ** 2)))
+def calc_mae(fcst: np.ndarray, ref: np.ndarray) -> float:
+    m = _valid(fcst, ref)
+    return float(np.mean(np.abs(fcst[m] - ref[m])))
 
 
-def bias(fcst: np.ndarray, ref: np.ndarray) -> float:
-    valid = ~(np.isnan(fcst) | np.isnan(ref))
-    return float(np.mean(fcst[valid] - ref[valid]))
+def calc_rmse(fcst: np.ndarray, ref: np.ndarray) -> float:
+    m = _valid(fcst, ref)
+    return float(np.sqrt(np.mean((fcst[m] - ref[m]) ** 2)))
 
 
-def categorical_scores(
-    fcst: np.ndarray, ref: np.ndarray, threshold: float
-) -> dict[str, float]:
-    """POD, FAR, CSI for exceedance of threshold."""
-    valid = ~(np.isnan(fcst) | np.isnan(ref))
-    f = fcst[valid] >= threshold
-    o = ref[valid] >= threshold
-    hits = int(np.sum(f & o))
-    misses = int(np.sum(~f & o))
+def calc_bias(fcst: np.ndarray, ref: np.ndarray) -> float:
+    m = _valid(fcst, ref)
+    return float(np.mean(fcst[m] - ref[m]))
+
+
+def calc_circular_mae(
+    fcst_dir: np.ndarray,
+    ref_dir: np.ndarray,
+    calm_mask: np.ndarray,
+) -> tuple[float, int, int]:
+    """
+    Circular MAE for wind direction (degrees).
+    Excludes points where ERA5 wind speed < CALM_THRESHOLD_KT (calm_mask=True).
+    Returns (circular_mae_deg, n_active, n_calm_excluded).
+    """
+    active = ~calm_mask & ~np.isnan(fcst_dir) & ~np.isnan(ref_dir)
+    n_calm = int(calm_mask.sum())
+    n_active = int(active.sum())
+    if n_active == 0:
+        return float("nan"), 0, n_calm
+    diff = fcst_dir[active] - ref_dir[active]
+    diff = ((diff + 180.0) % 360.0) - 180.0  # wrap to [-180, +180]
+    return float(np.mean(np.abs(diff))), n_active, n_calm
+
+
+def contingency_counts(
+    fcst: np.ndarray,
+    ref: np.ndarray,
+    threshold: float,
+) -> tuple[int, int, int]:
+    """Returns (hits, misses, false_alarms) for exceedance of threshold."""
+    m = _valid(fcst, ref)
+    f = fcst[m] >= threshold
+    o = ref[m] >= threshold
+    hits        = int(np.sum(f & o))
+    misses      = int(np.sum(~f & o))
     false_alarms = int(np.sum(f & ~o))
+    return hits, misses, false_alarms
+
+
+def pod_far_csi(
+    hits: int, misses: int, false_alarms: int
+) -> tuple[float, float, float]:
     pod = hits / (hits + misses) if (hits + misses) > 0 else float("nan")
     far = false_alarms / (hits + false_alarms) if (hits + false_alarms) > 0 else float("nan")
-    csi_denom = hits + misses + false_alarms
-    csi = hits / csi_denom if csi_denom > 0 else float("nan")
-    return {"hits": hits, "misses": misses, "false_alarms": false_alarms,
-            "POD": round(pod, 4), "FAR": round(far, 4), "CSI": round(csi, 4)}
+    denom = hits + misses + false_alarms
+    csi = hits / denom if denom > 0 else float("nan")
+    return pod, far, csi
 
 
 # ---------------------------------------------------------------------------
-# ERA5 fetch
+# ARCO fetch
 # ---------------------------------------------------------------------------
 
-def fetch_era5_for_lead(
-    init_time: datetime,
-    lead_h: int,
-    lats: np.ndarray,
-    lons: np.ndarray,
-    era5_source: str,
-) -> dict[str, np.ndarray | None]:
-    """
-    Fetch ERA5 t2m and tp for (init_time + lead_h) at Myanmar bbox.
-    Returns dict with 't2m_C' and 'tp_mm' arrays, or None if unavailable.
-    """
+def _open_arco():
+    import gcsfs
     import xarray as xr
+    fs = gcsfs.GCSFileSystem(token="anon")
+    store = gcsfs.mapping.GCSMap(ARCO_ZARR, gcs=fs)
+    return xr.open_zarr(store, chunks=None)
 
-    valid_time = init_time + timedelta(hours=lead_h)
-    print(f"    Fetching ERA5 for {valid_time.isoformat()} (lead +{lead_h}h)...")
 
-    if era5_source == "arco":
-        try:
-            from earth2studio.data import ARCO
+def _myanmar_indices(ds):
+    """
+    Returns (lat_slice, lon_slice, lat_asc, lon_asc) for the Myanmar bbox.
+    ARCO lat is descending (90→-90); selection is flipped to ascending after load.
+    """
+    lats_full = ds.latitude.values   # descending
+    lons_full = ds.longitude.values  # ascending
 
-            arco = ARCO()
-            da = arco(valid_time, ["t2m", "tp"])
-            da_mm = da.sel(
-                lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
-                lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
+    lat_29_idx = int(np.argmin(np.abs(lats_full - 29.0)))
+    lat_9_idx  = int(np.argmin(np.abs(lats_full - 9.0)))
+    lat_slice  = slice(lat_29_idx, lat_9_idx + 1)  # 29°N → 9°N in descending array
+
+    lon_92_idx  = int(np.argmin(np.abs(lons_full - 92.0)))
+    lon_102_idx = int(np.argmin(np.abs(lons_full - 102.0)))
+    lon_slice   = slice(lon_92_idx, lon_102_idx + 1)
+
+    lat_asc = lats_full[lat_slice][::-1]   # flip to ascending: 9°N → 29°N
+    lon_asc = lons_full[lon_slice]          # already ascending: 92°E → 102°E
+    return lat_slice, lon_slice, lat_asc, lon_asc
+
+
+def fetch_era5_6h_vars(ds, init_dt: datetime, lat_slice, lon_slice):
+    """
+    Fetch 2m_temperature, 10m_u_component_of_wind, 10m_v_component_of_wind
+    at 29 × 6-hourly timestamps aligned to the GCOp forecast frames.
+    Returns dict {'t2m': [29,81,41], 'u10m': [29,81,41], 'v10m': [29,81,41]} in
+    native units (K, m/s, m/s), lat in ascending order.
+    """
+    time_vals = ds.time.values
+
+    # Build 29 timestamps: t+0h, t+6h, ..., t+168h
+    ts_np = np.array([
+        np.datetime64((init_dt + timedelta(hours=6 * i)).replace(tzinfo=None).isoformat(), "ns")
+        for i in range(29)
+    ])
+    t_indices = [int(np.argmin(np.abs(time_vals - ts))) for ts in ts_np]
+
+    # Verify timestamps matched correctly (within 1 minute)
+    for i, (ts, ti) in enumerate(zip(ts_np, t_indices)):
+        matched = time_vals[ti]
+        diff_ns = abs(int(matched) - int(ts))
+        if diff_ns > 60 * 1e9:  # 60 seconds in nanoseconds
+            raise ValueError(
+                f"ARCO time mismatch at frame {i}: "
+                f"wanted {ts}, got {matched} (diff {diff_ns/1e9:.0f}s)"
             )
-            # Interpolate to forecast grid
-            t2m_da = da_mm.sel(variable="t2m").interp(lat=lats, lon=lons, method="linear")
-            tp_da = da_mm.sel(variable="tp").interp(lat=lats, lon=lons, method="linear")
-            t2m_C = (t2m_da.values - 273.15).astype(np.float32)
-            tp_m = tp_da.values.astype(np.float32)
-            # ERA5 tp is accumulated from forecast start; for 1-hour accumulation we need
-            # to take the difference between consecutive hours. ARCO provides analysis-step tp.
-            # At analysis time (step=0), tp=0. For step=1h, tp=accumulated 0→1h.
-            # ARCO exposes tp directly per analysis time; treat as 1-hour accumulation.
-            tp_mm = np.maximum(tp_m * 1000.0, 0.0).astype(np.float32)
-            return {"t2m_C": t2m_C, "tp_mm": tp_mm}
-        except Exception as e:
-            print(f"    WARNING: ARCO fetch failed: {e}")
-            return {"t2m_C": None, "tp_mm": None}
 
-    elif era5_source == "cds":
-        try:
-            from earth2studio.data import CDS
+    var_map = {
+        "t2m":  "2m_temperature",
+        "u10m": "10m_u_component_of_wind",
+        "v10m": "10m_v_component_of_wind",
+    }
+    result = {}
+    for short, arco_name in var_map.items():
+        print(f"    Fetching ARCO {short} ({arco_name}, 29 timestamps)...", flush=True)
+        arr = ds[arco_name].isel(
+            latitude=lat_slice, longitude=lon_slice, time=t_indices
+        ).load().values  # [29, n_lat_desc, n_lon]
+        arr = arr[:, ::-1, :]  # flip lat to ascending
+        result[short] = arr.astype(np.float64)
 
-            cds = CDS()
-            da = cds(valid_time, ["t2m", "tp"])
-            da_mm = da.sel(
-                lat=slice(MYANMAR_LAT_MAX, MYANMAR_LAT_MIN),
-                lon=slice(MYANMAR_LON_MIN, MYANMAR_LON_MAX),
-            )
-            t2m_da = da_mm.sel(variable="t2m").interp(lat=lats, lon=lons, method="linear")
-            tp_da = da_mm.sel(variable="tp").interp(lat=lats, lon=lons, method="linear")
-            t2m_C = (t2m_da.values - 273.15).astype(np.float32)
-            tp_mm = np.maximum(tp_da.values * 1000.0, 0.0).astype(np.float32)
-            return {"t2m_C": t2m_C, "tp_mm": tp_mm}
-        except Exception as e:
-            print(f"    WARNING: CDS fetch failed: {e}")
-            return {"t2m_C": None, "tp_mm": None}
+    return result
 
-    else:
-        print(f"    ERROR: Unknown ERA5 source '{era5_source}'")
-        return {"t2m_C": None, "tp_mm": None}
+
+def fetch_era5_hourly_tp(ds, init_dt: datetime, lat_slice, lon_slice):
+    """
+    Fetch total_precipitation hourly from t+1h through t+168h (168 contiguous values).
+    Returns ndarray [168, 81, 41] in raw metres (1h accumulation), lat ascending.
+    """
+    time_vals = ds.time.values
+    t_start_np = np.datetime64(
+        (init_dt + timedelta(hours=1)).replace(tzinfo=None).isoformat(), "ns"
+    )
+    t_end_np = np.datetime64(
+        (init_dt + timedelta(hours=168)).replace(tzinfo=None).isoformat(), "ns"
+    )
+
+    mask = (time_vals >= t_start_np) & (time_vals <= t_end_np)
+    t_indices = np.where(mask)[0]
+
+    if len(t_indices) != 168:
+        raise ValueError(
+            f"Expected 168 consecutive hourly tp timestamps; got {len(t_indices)}. "
+            "ARCO coverage may differ from expected — stopping as required."
+        )
+
+    # Verify start and end timestamps
+    actual_start = time_vals[t_indices[0]]
+    actual_end   = time_vals[t_indices[-1]]
+    print(
+        f"    Fetching ARCO total_precipitation "
+        f"({actual_start!s:.16} → {actual_end!s:.16}, 168 h)...",
+        flush=True,
+    )
+
+    arr = ds["total_precipitation"].isel(
+        latitude=lat_slice, longitude=lon_slice, time=t_indices
+    ).load().values  # [168, n_lat_desc, n_lon]
+    arr = arr[:, ::-1, :]  # flip lat to ascending
+    return arr.astype(np.float64)
+
+
+def build_era5_precip_6h(tp_hourly: np.ndarray) -> np.ndarray:
+    """
+    Aggregate 168 hourly ERA5 tp values into 28 six-hour windows (mm/hr).
+
+    Locked mapping:
+        GCOp +6h   ← ERA5 t+1h … t+6h   → tp_hourly[0:6]
+        GCOp +12h  ← ERA5 t+7h … t+12h  → tp_hourly[6:12]
+        ...
+        GCOp +168h ← ERA5 t+163h…t+168h → tp_hourly[162:168]
+
+    Per-hour clamp ≥ 0 before sum; aggregate clamp ≥ 0 after sum.
+    Conversion: sum_6h_metres × 1000 / 6 → mm/hr.
+    """
+    n_windows = 28
+    result = np.zeros((n_windows,) + tp_hourly.shape[1:], dtype=np.float64)
+    for k in range(n_windows):
+        window     = tp_hourly[6 * k : 6 * k + 6]       # [6, 81, 41] metres
+        clamped    = np.maximum(window, 0.0)              # per-hour clamp ≥ 0
+        sum_6h_m   = np.sum(clamped, axis=0)             # [81, 41] metres
+        sum_6h_m   = np.maximum(sum_6h_m, 0.0)          # aggregate clamp ≥ 0
+        result[k]  = sum_6h_m * 1000.0 / 6.0            # → mm/hr
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Main verification logic
 # ---------------------------------------------------------------------------
 
-def run_verification(
-    forecast_dir: Path,
-    output_dir: Path,
-    lead_hours: list[int],
-    era5_source: str,
-) -> int:
-    print("=" * 60)
-    print("Aurora1p5 Forecast Verification vs ERA5")
-    print("=" * 60)
+def run_verification(forecast_dir: Path, output_dir: Path) -> int:
+    print("=" * 70)
+    print("GraphCastOperational Myanmar 7-day Forecast Verification vs ERA5")
+    print("Phase R5  |  verification.json schema v2.0")
+    print("=" * 70)
 
-    # ------------------------------------------------------------------
-    # Load forecast
-    # ------------------------------------------------------------------
+    # ── Pre-computation checks ──────────────────────────────────────────────
+    print("\n[Pre-computation checks]")
+
     meta_path = forecast_dir / "forecast.json"
-    temp_path = forecast_dir / "temperature.bin"
-    precip_path = forecast_dir / "precipitation.bin"
-
-    for p in [meta_path, temp_path, precip_path]:
-        if not p.exists():
-            print(f"ERROR: Missing {p}. Run generate_forecast.py first.")
-            return 1
-
-    with open(meta_path) as f:
-        meta = json.load(f)
-
-    if meta.get("is_demo", True):
-        print("ERROR: Forecast is demo data. Verification requires a real forecast.")
-        return 1
-
-    n_times = meta["n_times"]
-    n_lat = meta["grid"]["n_lat"]
-    n_lon = meta["grid"]["n_lon"]
-    lats = np.array(meta["lat"], dtype=np.float32)
-    lons = np.array(meta["lon"], dtype=np.float32)
-    times_utc = meta["times_utc"]
-    init_time = datetime.fromisoformat(times_utc[0].replace("Z", "+00:00"))
-
-    temp_all = np.frombuffer(temp_path.read_bytes(), dtype="<f4").reshape(n_times, n_lat, n_lon)
-    precip_all = np.frombuffer(precip_path.read_bytes(), dtype="<f4").reshape(n_times, n_lat, n_lon)
-
-    print(f"\nForecast:  {meta['model']} {meta['model_version']}")
-    print(f"Init time: {init_time.isoformat()}")
-    print(f"Grid:      {n_lat}×{n_lon} @ {meta['spatial_resolution_deg']}°  [{n_times} frames]")
-    print(f"ERA5 src:  {era5_source}")
-    print(f"Lead hrs:  {lead_hours}\n")
-
-    # Filter lead hours to those actually in the forecast
-    max_lead = n_times - 1  # index 0 = init, index n = t+n
-    valid_leads = [h for h in lead_hours if 0 < h <= max_lead]
-    if not valid_leads:
-        print(f"ERROR: Requested lead hours are out of range [1, {max_lead}].")
-        return 1
-
-    # ------------------------------------------------------------------
-    # Check ERA5 availability
-    # ------------------------------------------------------------------
-    latest_valid_time = init_time + timedelta(hours=max(valid_leads))
-    era5_latency_days = 5
-    if (datetime.now(timezone.utc) - latest_valid_time).days < era5_latency_days:
-        print(
-            f"WARNING: ERA5 for the latest verification time ({latest_valid_time.date()}) "
-            f"may not yet be available (ERA5 latency ~{era5_latency_days} days). "
-            "Some lead times may fail."
-        )
-
-    # ------------------------------------------------------------------
-    # Verify per lead time
-    # ------------------------------------------------------------------
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    temp_results = []
-    precip_results = []
-
-    # For spatial error maps (accumulated)
-    temp_error_sum = np.zeros((n_lat, n_lon), dtype=np.float64)
-    temp_n_valid = np.zeros((n_lat, n_lon), dtype=int)
-    precip_bias_sum = np.zeros((n_lat, n_lon), dtype=np.float64)
-    precip_n_valid = np.zeros((n_lat, n_lon), dtype=int)
-
-    for lead_h in valid_leads:
-        print(f"[+{lead_h:3d}h] ", end="")
-        frame_idx = lead_h  # index 0 = t+0 (init), index h = t+h
-
-        fcst_t2m = temp_all[frame_idx]      # °C
-        fcst_tp = precip_all[frame_idx]     # mm / 1-hour accumulation
-
-        era5 = fetch_era5_for_lead(init_time, lead_h, lats, lons, era5_source)
-
-        if era5["t2m_C"] is None:
-            print(f"    t2m: SKIPPED (ERA5 unavailable)")
-            temp_results.append({"lead_h": lead_h, "available": False})
-            precip_results.append({"lead_h": lead_h, "available": False})
-            continue
-
-        ref_t2m = era5["t2m_C"]
-        ref_tp = era5["tp_mm"]
-
-        # Temperature metrics
-        t_mae = mae(fcst_t2m, ref_t2m)
-        t_rmse = rmse(fcst_t2m, ref_t2m)
-        t_bias = bias(fcst_t2m, ref_t2m)
-
-        # Precipitation metrics
-        p_mae = mae(fcst_tp, ref_tp)
-        p_rmse = rmse(fcst_tp, ref_tp)
-        p_bias = bias(fcst_tp, ref_tp)
-        p_cat = {
-            f"thr_{thr:.1f}mm": categorical_scores(fcst_tp, ref_tp, thr)
-            for thr in PRECIP_THRESHOLDS
-        }
-
-        print(
-            f"    t2m: MAE={t_mae:.2f}°C  RMSE={t_rmse:.2f}°C  bias={t_bias:+.2f}°C  |  "
-            f"tp: MAE={p_mae:.3f}mm  RMSE={p_rmse:.3f}mm  bias={p_bias:+.3f}mm"
-        )
-
-        temp_results.append({
-            "lead_h": lead_h,
-            "available": True,
-            "MAE_C": round(t_mae, 4),
-            "RMSE_C": round(t_rmse, 4),
-            "bias_C": round(t_bias, 4),
-            "n_points": int((~np.isnan(fcst_t2m)).sum()),
-        })
-        precip_results.append({
-            "lead_h": lead_h,
-            "available": True,
-            "MAE_mm": round(p_mae, 4),
-            "RMSE_mm": round(p_rmse, 4),
-            "bias_mm": round(p_bias, 4),
-            "categorical": p_cat,
-            "n_points": int((~np.isnan(fcst_tp)).sum()),
-        })
-
-        # Accumulate spatial error maps
-        valid_mask = ~(np.isnan(fcst_t2m) | np.isnan(ref_t2m))
-        temp_error_sum[valid_mask] += np.abs(fcst_t2m[valid_mask] - ref_t2m[valid_mask])
-        temp_n_valid[valid_mask] += 1
-
-        valid_mask_p = ~(np.isnan(fcst_tp) | np.isnan(ref_tp))
-        precip_bias_sum[valid_mask_p] += (fcst_tp[valid_mask_p] - ref_tp[valid_mask_p])
-        precip_n_valid[valid_mask_p] += 1
-
-    # ------------------------------------------------------------------
-    # Spatial error maps
-    # ------------------------------------------------------------------
-    with np.errstate(invalid="ignore"):
-        temp_mae_map = np.where(temp_n_valid > 0, temp_error_sum / temp_n_valid, np.nan)
-        precip_bias_map = np.where(precip_n_valid > 0, precip_bias_sum / precip_n_valid, np.nan)
-
-    # ------------------------------------------------------------------
-    # Build verification report
-    # ------------------------------------------------------------------
-    available_leads = [r for r in temp_results if r.get("available")]
-
-    # Summary stats (domain-average over all verified leads)
-    if available_leads:
-        mean_t_mae = float(np.mean([r["MAE_C"] for r in available_leads]))
-        mean_t_bias = float(np.mean([r["bias_C"] for r in available_leads]))
-        mean_t_rmse = float(np.mean([r["RMSE_C"] for r in available_leads]))
-    else:
-        mean_t_mae = mean_t_bias = mean_t_rmse = None
-
-    available_p = [r for r in precip_results if r.get("available")]
-    if available_p:
-        mean_p_mae = float(np.mean([r["MAE_mm"] for r in available_p]))
-        mean_p_bias = float(np.mean([r["bias_mm"] for r in available_p]))
-    else:
-        mean_p_mae = mean_p_bias = None
-
-    verification = {
-        "schema_version": "1.0",
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "forecast": {
-            "model": meta["model"],
-            "model_version": meta["model_version"],
-            "initialization_time": meta["initialization_time"],
-            "initialization_source": meta["initialization_source"],
-            "forecast_generated_at": meta["forecast_generated_at"],
-            "spatial_resolution_deg": meta["spatial_resolution_deg"],
-        },
-        "reference": {
-            "dataset": "ERA5",
-            "source": era5_source,
-            "caveat": (
-                "ERA5 is a reanalysis product, not direct observations. "
-                "Skill scores measure consistency with ERA5, not absolute accuracy. "
-                "ERA5 ~5-day latency may cause some lead times to be unavailable."
-            ),
-        },
-        "region": {
-            "name": "Myanmar",
-            "lat_min": float(lats.min()),
-            "lat_max": float(lats.max()),
-            "lon_min": float(lons.min()),
-            "lon_max": float(lons.max()),
-            "n_points": n_lat * n_lon,
-        },
-        "patched_variables": {
-            "summary": (
-                "4 variables not available in IFS open data were zero-filled: "
-                "sic (sea ice), lcc (low cloud cover), mcc (mid cloud cover), hcc (high cloud cover)."
-            ),
-            "sic": {
-                "method": "zero-fill globally",
-                "impact": (
-                    "sic mean in training data: ~0.111 (scale ~0.297). "
-                    "Zero-fill is -0.37σ from training mean. "
-                    "Negligible for Myanmar (tropical, no sea ice). Acceptable."
-                ),
-            },
-            "lcc": {
-                "method": "zero-fill globally",
-                "impact": (
-                    "lcc mean in training data: ~0.462 (scale ~0.393). "
-                    "Zero-fill is -1.18σ from training mean. "
-                    "Aurora uses tcc (total cloud cover, available from IFS) as a partial substitute. "
-                    "May cause modest warm bias in 2m temperature (less cloud shading) and "
-                    "underestimation of convective trigger conditions. Effect likely small vs "
-                    "other sources of forecast error."
-                ),
-            },
-            "mcc": {
-                "method": "zero-fill globally",
-                "impact": (
-                    "mcc mean in training data: ~0.299 (scale ~0.373). "
-                    "Zero-fill is -0.80σ from training mean. "
-                    "Similar impact to lcc; tcc partially compensates. "
-                    "Myanmar mid-level clouds affect radiation and precipitation patterns."
-                ),
-            },
-            "hcc": {
-                "method": "zero-fill globally",
-                "impact": (
-                    "hcc mean in training data: ~0.327 (scale ~0.413). "
-                    "Zero-fill is -0.79σ from training mean. "
-                    "IFS open data does not provide individual cloud layer fractions at step=0. "
-                    "Tropical cirrus is underrepresented in Aurora's input. "
-                    "Effect on near-surface forecasts likely secondary."
-                ),
-            },
-            "overall_assessment": (
-                "sic zero-fill is scientifically appropriate for tropical Myanmar. "
-                "lcc/mcc/hcc zero-fill is a known limitation: IFS open data provides only tcc "
-                "at the analysis time (step=0), not layer fractions. "
-                "Aurora uses tcc directly as an AR variable, providing partial cloud information. "
-                "The lcc/mcc/hcc zero-fill may introduce a slight warm/dry bias but is unlikely "
-                "to dominate forecast error beyond 1-2 days. "
-                "This is a structural limitation of the IFS open data availability, "
-                "not a modelling error. Better alternatives: ECMWF CDS (requires registration) "
-                "or ERA5 for hindcasts."
-            ),
-        },
-        "precipitation_semantics": {
-            "variable": "tp1h",
-            "units": "mm per 1-hour accumulation period",
-            "not_rate": True,
-            "transform_pipeline": (
-                "Aurora model: predicts scaled_tp_1h = log_transform(tp1h_metres) in log-space. "
-                "Earth2Studio aurora1p5.py _prepare_output(): applies aurora_log_untransform "
-                "(= 0.001 * (exp(x) - 1)) to convert log-space → physical metres before zarr. "
-                "Pipeline: zarr_metres * 1000 → mm / 1-hour accumulation. "
-                "Zero-clamp applied to suppress numerical noise (physical tp1h ≥ 0)."
-            ),
-            "display_label": "mm / 1-hour accumulation",
-            "frontend_note": (
-                "Values should be displayed as 'X mm / 1-hour accumulation', "
-                "not 'X mm/h'. These are total accumulations per forecast hour, "
-                "not instantaneous rainfall intensity."
-            ),
-        },
-        "temperature_verification": {
-            "leads_verified": [r["lead_h"] for r in temp_results if r.get("available")],
-            "domain": "Myanmar (9–29°N, 92–102°E)",
-            "summary": {
-                "mean_MAE_C": round(mean_t_mae, 4) if mean_t_mae is not None else None,
-                "mean_bias_C": round(mean_t_bias, 4) if mean_t_bias is not None else None,
-                "mean_RMSE_C": round(mean_t_rmse, 4) if mean_t_rmse is not None else None,
-            },
-            "by_lead": temp_results,
-        },
-        "precipitation_verification": {
-            "leads_verified": [r["lead_h"] for r in precip_results if r.get("available")],
-            "thresholds_mm": PRECIP_THRESHOLDS,
-            "summary": {
-                "mean_MAE_mm": round(mean_p_mae, 4) if mean_p_mae is not None else None,
-                "mean_bias_mm": round(mean_p_bias, 4) if mean_p_bias is not None else None,
-            },
-            "by_lead": precip_results,
-        },
-        "spatial_error": {
-            "temperature_mae": {
-                "description": "Mean absolute error of 2m temperature averaged over all verified lead times",
-                "shape": [n_lat, n_lon],
-                "lats": lats.tolist(),
-                "lons": lons.tolist(),
-                "values_C": [
-                    [round(float(v), 3) if not np.isnan(v) else None for v in row]
-                    for row in temp_mae_map
-                ],
-            },
-            "precipitation_bias": {
-                "description": "Mean bias (fcst - ERA5) of 1-hour precipitation averaged over all verified lead times",
-                "shape": [n_lat, n_lon],
-                "lats": lats.tolist(),
-                "lons": lons.tolist(),
-                "values_mm": [
-                    [round(float(v), 4) if not np.isnan(v) else None for v in row]
-                    for row in precip_bias_map
-                ],
-            },
-        },
-        "limitations": [
-            "ERA5 is a reanalysis, not direct observations — station-based verification would be more rigorous.",
-            "Both Aurora1p5 and ERA5 use the same IFS model family; results may show optimistic skill for temperature.",
-            "Precipitation verification is sensitive to timing and position errors (double-penalty problem).",
-            "Four IFS initialization variables were zero-filled (sic, lcc, mcc, hcc); see patched_variables.",
-            "Forecast skill degrades significantly beyond 3–5 days at 0.25° resolution.",
-            "Myanmar topography (Chin Hills, Rakhine Yoma, Shan Plateau) is partially resolved at 0.25°.",
-            "This verification covers one forecast cycle; multi-cycle averaging would be needed for robust statistics.",
-        ],
+    bin_paths = {
+        "temperature":    forecast_dir / "temperature.bin",
+        "precipitation":  forecast_dir / "precipitation.bin",
+        "wind_speed":     forecast_dir / "wind_speed.bin",
+        "wind_direction": forecast_dir / "wind_direction.bin",
     }
 
-    # ------------------------------------------------------------------
-    # Write machine-readable JSON
-    # ------------------------------------------------------------------
+    if not meta_path.exists():
+        print(f"  [FAIL] {meta_path} not found")
+        return 1
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+        print(f"  [PASS] forecast.json readable")
+    except Exception as e:
+        print(f"  [FAIL] forecast.json parse error: {e}")
+        return 1
+
+    if meta.get("is_demo", True):
+        print("  [FAIL] is_demo=True — verification requires real forecast data")
+        return 1
+    print("  [PASS] is_demo=False")
+
+    for varname, path in bin_paths.items():
+        if not path.exists():
+            print(f"  [FAIL] {path.name} not found")
+            return 1
+        sz = path.stat().st_size
+        if sz != EXPECTED_BYTES:
+            print(f"  [FAIL] {path.name}: {sz:,} bytes (expected {EXPECTED_BYTES:,})")
+            return 1
+        print(f"  [PASS] {path.name}: {sz:,} bytes")
+
+    # Extract metadata dynamically
+    n_frames  = meta["n_frames"]
+    n_lat     = meta["grid"]["n_lat"]
+    n_lon     = meta["grid"]["n_lon"]
+    step_h    = meta["native_timestep_hours"]
+    horizon   = meta["forecast_horizon_hours"]
+    lats      = np.array(meta["lat"], dtype=np.float64)
+    lons      = np.array(meta["lon"], dtype=np.float64)
+    init_str  = meta["initialization_time"]
+    init_dt   = datetime.fromisoformat(init_str.replace("Z", "+00:00"))
+
+    if n_frames != 29 or n_lat != 81 or n_lon != 41:
+        print(
+            f"  [FAIL] Unexpected dims: n_frames={n_frames}, "
+            f"n_lat={n_lat}, n_lon={n_lon} (expected 29/81/41)"
+        )
+        return 1
+    print(f"  [PASS] Grid: {n_frames} frames × {n_lat}×{n_lon} @ 0.25°")
+    print(f"  [INFO] Model: {meta.get('model')} | Init: {init_str} | Horizon: {horizon}h")
+    print(f"  [INFO] forecast.json schema_version: {meta.get('schema_version')}")
+
+    # Load forecast arrays [n_frames, n_lat, n_lon]
+    shape = (n_frames, n_lat, n_lon)
+
+    def load_bin(p: Path) -> np.ndarray:
+        return np.frombuffer(p.read_bytes(), dtype="<f4").reshape(shape).astype(np.float64)
+
+    fcst_temp   = load_bin(bin_paths["temperature"])    # °C
+    fcst_precip = load_bin(bin_paths["precipitation"])  # mm/hr
+    fcst_wspeed = load_bin(bin_paths["wind_speed"])     # kt
+    fcst_wdir   = load_bin(bin_paths["wind_direction"]) # °FROM
+
+    # ── ERA5 fetch ──────────────────────────────────────────────────────────
+    print(f"\n[ERA5 fetch]")
+    print(f"  Dataset: {ARCO_ZARR}")
+
+    ds = _open_arco()
+    lat_slice, lon_slice, era5_lat, era5_lon = _myanmar_indices(ds)
+
+    print(f"  lat: {era5_lat[0]:.2f}°N → {era5_lat[-1]:.2f}°N ({len(era5_lat)} pts)")
+    print(f"  lon: {era5_lon[0]:.2f}°E → {era5_lon[-1]:.2f}°E ({len(era5_lon)} pts)")
+
+    # Grid alignment check — stop if misaligned
+    lat_err = float(np.max(np.abs(era5_lat - lats)))
+    lon_err = float(np.max(np.abs(era5_lon - lons)))
+    if lat_err > GRID_TOL:
+        print(f"  [FAIL] Lat grid mismatch: max error {lat_err:.5f}° > {GRID_TOL}°")
+        return 1
+    if lon_err > GRID_TOL:
+        print(f"  [FAIL] Lon grid mismatch: max error {lon_err:.5f}° > {GRID_TOL}°")
+        return 1
+    print(f"  [PASS] Grid aligned: lat_err≤{lat_err:.6f}°, lon_err≤{lon_err:.6f}°")
+
+    # Fetch 6-hourly vars (t2m, u10m, v10m)
+    era5_6h = fetch_era5_6h_vars(ds, init_dt, lat_slice, lon_slice)
+    era5_t2m_K = era5_6h["t2m"]   # [29, 81, 41] K
+    era5_u10m  = era5_6h["u10m"]  # [29, 81, 41] m/s
+    era5_v10m  = era5_6h["v10m"]  # [29, 81, 41] m/s
+
+    # Fetch hourly tp [168, 81, 41] metres
+    tp_hourly = fetch_era5_hourly_tp(ds, init_dt, lat_slice, lon_slice)
+
+    # Report tp raw stats
+    n_neg = int((tp_hourly < 0).sum())
+    print(
+        f"  [INFO] ERA5 tp hourly: {n_neg}/{tp_hourly.size} negative "
+        f"({n_neg/tp_hourly.size*100:.2f}%) — spectral artifacts, clamped to 0"
+    )
+    print(
+        f"  [INFO] ERA5 tp range: "
+        f"min={tp_hourly.min():.8f} m, max={tp_hourly.max():.6f} m"
+    )
+
+    # ERA5 sanity checks — stop if out of range
+    t2m_min, t2m_max = float(era5_t2m_K.min()), float(era5_t2m_K.max())
+    if t2m_min < 200 or t2m_max > 335:
+        print(f"  [FAIL] ERA5 t2m out of plausible range: [{t2m_min:.1f}, {t2m_max:.1f}] K")
+        return 1
+    print(f"  [PASS] ERA5 t2m: [{t2m_min:.1f}, {t2m_max:.1f}] K")
+
+    u_max = float(np.abs(era5_u10m).max())
+    v_max = float(np.abs(era5_v10m).max())
+    if u_max > 150 or v_max > 150:
+        print(f"  [FAIL] ERA5 wind out of range: |u|≤{u_max:.1f} m/s, |v|≤{v_max:.1f} m/s")
+        return 1
+    print(f"  [PASS] ERA5 wind: |u|≤{u_max:.2f} m/s, |v|≤{v_max:.2f} m/s")
+
+    # ── Transformations ─────────────────────────────────────────────────────
+    print("\n[Transformations]")
+
+    # Temperature: K → °C
+    era5_temp = era5_t2m_K - 273.15  # [29, 81, 41]
+
+    # Wind speed: m/s → kt
+    era5_wspeed = np.sqrt(era5_u10m**2 + era5_v10m**2) * 1.94384  # [29, 81, 41]
+
+    # Wind direction: meteorological FROM (°)
+    # (atan2(-u, -v) + 360) % 360  — equivalent to (270 - atan2d(v, u)) % 360
+    era5_wdir = (np.degrees(np.arctan2(-era5_u10m, -era5_v10m)) + 360.0) % 360.0
+
+    # Calm mask: exclude where ERA5 speed < CALM_THRESHOLD_KT
+    era5_calm = era5_wspeed < CALM_THRESHOLD_KT  # [29, 81, 41] bool
+
+    # Precipitation: hourly → 28 × 6h windows → mm/hr
+    era5_precip_28 = build_era5_precip_6h(tp_hourly)  # [28, 81, 41]
+
+    print(f"  [INFO] ERA5 temp:   [{era5_temp.min():.2f}, {era5_temp.max():.2f}] °C")
+    print(f"  [INFO] ERA5 speed:  [{era5_wspeed.min():.3f}, {era5_wspeed.max():.3f}] kt")
+    print(f"  [INFO] ERA5 precip: [{era5_precip_28.min():.4f}, {era5_precip_28.max():.4f}] mm/hr (28 windows)")
+
+    # ── Metrics ─────────────────────────────────────────────────────────────
+    print("\n[Computing metrics]")
+
+    temp_by_lt   = []
+    wspeed_by_lt = []
+    wdir_by_lt   = []
+    precip_by_lt = []
+
+    # Contingency count accumulators for summary POD/FAR/CSI
+    total_hits, total_misses, total_fa = 0, 0, 0
+
+    for i in range(n_frames):
+        lead_h     = i * step_h
+        valid_time = (init_dt + timedelta(hours=lead_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Temperature — all 29 frames
+        mae_t  = calc_mae(fcst_temp[i], era5_temp[i])
+        rmse_t = calc_rmse(fcst_temp[i], era5_temp[i])
+        bias_t = calc_bias(fcst_temp[i], era5_temp[i])
+        temp_by_lt.append({
+            "lead_time_hours": lead_h,
+            "valid_time": valid_time,
+            "mae":  round(mae_t,  4),
+            "rmse": round(rmse_t, 4),
+            "bias": round(bias_t, 4),
+            "n_points": n_lat * n_lon,
+        })
+
+        # Wind speed — all 29 frames
+        mae_ws  = calc_mae(fcst_wspeed[i], era5_wspeed[i])
+        rmse_ws = calc_rmse(fcst_wspeed[i], era5_wspeed[i])
+        bias_ws = calc_bias(fcst_wspeed[i], era5_wspeed[i])
+        wspeed_by_lt.append({
+            "lead_time_hours": lead_h,
+            "valid_time": valid_time,
+            "mae":  round(mae_ws,  4),
+            "rmse": round(rmse_ws, 4),
+            "bias": round(bias_ws, 4),
+            "n_points": n_lat * n_lon,
+        })
+
+        # Wind direction — all 29 frames; calm points excluded
+        c_mae, n_act, n_calm = calc_circular_mae(
+            fcst_wdir[i], era5_wdir[i], era5_calm[i]
+        )
+        wdir_by_lt.append({
+            "lead_time_hours": lead_h,
+            "valid_time": valid_time,
+            "circular_mae": round(c_mae, 4) if not np.isnan(c_mae) else None,
+            "n_points_active": n_act,
+            "n_points_calm_excluded": n_calm,
+        })
+
+        # Precipitation — frames 1..28 only (t+6h → t+168h); t+0h excluded
+        if i > 0:
+            p_idx = i - 1   # index into era5_precip_28 [0..27]
+            mae_p  = calc_mae(fcst_precip[i], era5_precip_28[p_idx])
+            rmse_p = calc_rmse(fcst_precip[i], era5_precip_28[p_idx])
+            bias_p = calc_bias(fcst_precip[i], era5_precip_28[p_idx])
+            h, m, fa = contingency_counts(
+                fcst_precip[i], era5_precip_28[p_idx], PRECIP_THRESHOLD_MM_HR
+            )
+            pod_lt, far_lt, csi_lt = pod_far_csi(h, m, fa)
+            total_hits   += h
+            total_misses += m
+            total_fa     += fa
+            precip_by_lt.append({
+                "lead_time_hours": lead_h,
+                "valid_time": valid_time,
+                "mae":  round(mae_p,  4),
+                "rmse": round(rmse_p, 4),
+                "bias": round(bias_p, 4),
+                "pod": round(pod_lt, 4) if not np.isnan(pod_lt) else None,
+                "far": round(far_lt, 4) if not np.isnan(far_lt) else None,
+                "csi": round(csi_lt, 4) if not np.isnan(csi_lt) else None,
+                "n_hits": h,
+                "n_misses": m,
+                "n_false_alarms": fa,
+                "n_points": n_lat * n_lon,
+            })
+
+    # ── Summary metrics ──────────────────────────────────────────────────────
+    sum_temp = {
+        "mae":      round(float(np.mean([r["mae"]  for r in temp_by_lt])), 4),
+        "rmse":     round(float(np.mean([r["rmse"] for r in temp_by_lt])), 4),
+        "bias":     round(float(np.mean([r["bias"] for r in temp_by_lt])), 4),
+        "n_frames": n_frames,
+    }
+    sum_wspeed = {
+        "mae":      round(float(np.mean([r["mae"]  for r in wspeed_by_lt])), 4),
+        "rmse":     round(float(np.mean([r["rmse"] for r in wspeed_by_lt])), 4),
+        "bias":     round(float(np.mean([r["bias"] for r in wspeed_by_lt])), 4),
+        "n_frames": n_frames,
+    }
+    wdir_maes = [r["circular_mae"] for r in wdir_by_lt if r["circular_mae"] is not None]
+    sum_wdir = {
+        "circular_mae": round(float(np.mean(wdir_maes)), 4) if wdir_maes else None,
+        "n_frames": n_frames,
+    }
+    # Summary POD/FAR/CSI from total contingency counts (not averaged per-frame ratios)
+    sum_pod, sum_far, sum_csi = pod_far_csi(total_hits, total_misses, total_fa)
+    sum_precip = {
+        "mae":               round(float(np.mean([r["mae"]  for r in precip_by_lt])), 4),
+        "rmse":              round(float(np.mean([r["rmse"] for r in precip_by_lt])), 4),
+        "bias":              round(float(np.mean([r["bias"] for r in precip_by_lt])), 4),
+        "pod":               round(sum_pod, 4) if not np.isnan(sum_pod) else None,
+        "far":               round(sum_far, 4) if not np.isnan(sum_far) else None,
+        "csi":               round(sum_csi, 4) if not np.isnan(sum_csi) else None,
+        "total_hits":        total_hits,
+        "total_misses":      total_misses,
+        "total_false_alarms": total_fa,
+        "n_frames":          28,
+    }
+
+    # ── Post-computation checks ──────────────────────────────────────────────
+    print("\n[Post-computation checks]")
+    ok = True
+
+    def chk(cond: bool, msg: str) -> None:
+        nonlocal ok
+        if not cond:
+            print(f"  [FAIL] {msg}")
+            ok = False
+        else:
+            print(f"  [PASS] {msg}")
+
+    chk(sum_temp["mae"]  >= 0, f"Temperature MAE ≥ 0 ({sum_temp['mae']})")
+    chk(sum_temp["rmse"] >= sum_temp["mae"],
+        f"Temperature RMSE ≥ MAE ({sum_temp['rmse']} ≥ {sum_temp['mae']})")
+
+    chk(sum_wspeed["mae"]  >= 0, f"Wind speed MAE ≥ 0 ({sum_wspeed['mae']})")
+    chk(sum_wspeed["rmse"] >= sum_wspeed["mae"],
+        f"Wind speed RMSE ≥ MAE ({sum_wspeed['rmse']} ≥ {sum_wspeed['mae']})")
+
+    chk(sum_precip["mae"]  >= 0, f"Precipitation MAE ≥ 0 ({sum_precip['mae']})")
+    chk(sum_precip["rmse"] >= sum_precip["mae"],
+        f"Precipitation RMSE ≥ MAE ({sum_precip['rmse']} ≥ {sum_precip['mae']})")
+
+    if sum_precip["pod"] is not None:
+        chk(0.0 <= sum_precip["pod"] <= 1.0, f"POD ∈ [0,1] ({sum_precip['pod']})")
+        chk(0.0 <= sum_precip["far"] <= 1.0, f"FAR ∈ [0,1] ({sum_precip['far']})")
+        chk(0.0 <= sum_precip["csi"] <= 1.0, f"CSI ∈ [0,1] ({sum_precip['csi']})")
+
+    if sum_wdir["circular_mae"] is not None:
+        chk(0.0 <= sum_wdir["circular_mae"] <= 180.0,
+            f"Circular MAE ∈ [0°,180°] ({sum_wdir['circular_mae']}°)")
+
+    # Per-lead-time invariant check
+    for r in temp_by_lt:
+        if r["mae"] < 0 or r["rmse"] < r["mae"]:
+            print(f"  [FAIL] Temperature invariant at lead +{r['lead_time_hours']}h")
+            ok = False
+    for r in wspeed_by_lt:
+        if r["mae"] < 0 or r["rmse"] < r["mae"]:
+            print(f"  [FAIL] Wind speed invariant at lead +{r['lead_time_hours']}h")
+            ok = False
+    for r in precip_by_lt:
+        if r["mae"] < 0 or r["rmse"] < r["mae"]:
+            print(f"  [FAIL] Precipitation invariant at lead +{r['lead_time_hours']}h")
+            ok = False
+
+    # NaN check
+    all_scalar_metrics = (
+        [r["mae"] for r in temp_by_lt]
+        + [r["rmse"] for r in temp_by_lt]
+        + [r["mae"] for r in wspeed_by_lt]
+        + [r["mae"] for r in precip_by_lt]
+    )
+    if any(np.isnan(v) for v in all_scalar_metrics):
+        print("  [FAIL] NaN found in metric values")
+        ok = False
+    else:
+        print("  [PASS] No NaN in metric values")
+
+    # Sanity warnings (non-fatal)
+    if sum_temp["mae"] > 15.0:
+        print(f"  [WARN] Temperature MAE {sum_temp['mae']:.4f}°C is unusually high")
+    if sum_wspeed["mae"] > 50.0:
+        print(f"  [WARN] Wind speed MAE {sum_wspeed['mae']:.4f} kt is unusually high")
+    if sum_precip["mae"] > 50.0:
+        print(f"  [WARN] Precipitation MAE {sum_precip['mae']:.4f} mm/hr is unusually high")
+
+    if not ok:
+        print("\n  Validation FAILED — verification.json NOT written")
+        return 1
+
+    print("  [PASS] All post-computation checks passed")
+
+    # ── Build verification.json ──────────────────────────────────────────────
+    verification = {
+        "schema_version": "2.0",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model_metadata": {
+            "model":                    meta.get("model"),
+            "model_checkpoint":         meta.get("model_checkpoint"),
+            "init_time":                init_str,
+            "forecast_schema_version":  meta.get("schema_version"),
+            "earth2studio_version":     meta.get("earth2studio_version"),
+            "n_times":                  n_frames,
+            "native_timestep_hours":    step_h,
+            "forecast_horizon_hours":   horizon,
+            "spatial_resolution_deg":   meta.get("native_resolution_deg"),
+            "lat_bbox":                 [float(lats[0]), float(lats[-1])],
+            "lon_bbox":                 [float(lons[0]), float(lons[-1])],
+            "grid_dims":                [n_lat, n_lon],
+            "is_demo":                  meta.get("is_demo"),
+        },
+        "reference_data": {
+            "source":               "ERA5 via ARCO",
+            "dataset":              ARCO_ZARR,
+            "type":                 "reanalysis",
+            "period_start":         init_str,
+            "period_end":           (init_dt + timedelta(hours=168)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "spatial_resolution_deg": 0.25,
+            "n_points":             n_lat * n_lon,
+            "tp_variable":          "total_precipitation",
+            "tp_representation": (
+                "1-hour accumulation ending at each valid timestamp. "
+                "Empirically confirmed from ARCO data on 2026-08-16. "
+                "No cumulative forecast-run semantics. No seam handling."
+            ),
+            "caveats": [
+                "ERA5 is a numerical reanalysis product, not direct observations.",
+                "GCOp was trained on ERA5; comparison may be optimistic relative to independent observations.",
+                "Single forecast cycle — skill metrics are not statistically robust.",
+                "GCOp and ERA5 use 0.25° grids; no spatial interpolation was performed.",
+                "ERA5 precipitation aggregated from 6 consecutive 1-hour accumulations per 6h window.",
+                "January 2021 is dry season in Myanmar; precipitation metrics reflect low-rain conditions.",
+            ],
+        },
+        "precipitation_threshold_mm_hr": PRECIP_THRESHOLD_MM_HR,
+        "wind_direction_calm_threshold_kt": CALM_THRESHOLD_KT,
+        "variables": {
+            "temperature": {
+                "unit":              "°C",
+                "n_frames_verified": n_frames,
+                "by_lead_time":      temp_by_lt,
+                "summary":           sum_temp,
+            },
+            "precipitation": {
+                "unit":   "mm/hr",
+                "note": (
+                    "t+0h excluded by GCOp pipeline convention (tp06=0 at init frame). "
+                    "28 frames verified: t+6h through t+168h."
+                ),
+                "n_frames_verified": 28,
+                "by_lead_time":      precip_by_lt,
+                "summary":           sum_precip,
+            },
+            "wind_speed": {
+                "unit":              "kt",
+                "n_frames_verified": n_frames,
+                "by_lead_time":      wspeed_by_lt,
+                "summary":           sum_wspeed,
+            },
+            "wind_direction": {
+                "unit":    "degrees",
+                "method":  "meteorological FROM: (atan2(-u, -v) + 360) % 360",
+                "calm_exclusion": (
+                    f"Points where ERA5 speed < {CALM_THRESHOLD_KT} kt "
+                    "excluded from circular MAE"
+                ),
+                "n_frames_verified": n_frames,
+                "by_lead_time":      wdir_by_lt,
+                "summary":           sum_wdir,
+            },
+        },
+    }
+
+    # ── Write output — only if all checks passed ─────────────────────────────
+    output_dir.mkdir(parents=True, exist_ok=True)
     json_out = output_dir / "verification.json"
     with open(json_out, "w") as f:
         json.dump(verification, f, indent=2)
-    print(f"\nVerification JSON: {json_out}")
+    print(f"\n  Wrote {json_out} ({json_out.stat().st_size:,} bytes)")
 
-    # ------------------------------------------------------------------
-    # Write human-readable Markdown
-    # ------------------------------------------------------------------
-    md_lines = [
-        "# Aurora1p5 Forecast Verification",
-        "",
-        f"**Generated:** {verification['generated_at']}  ",
-        f"**Model:** {meta['model']} {meta['model_version']}  ",
-        f"**Init time:** {meta['initialization_time']}  ",
-        f"**Reference:** ERA5 (via {era5_source})  ",
-        "",
-        "> **Caveat:** ERA5 is a reanalysis product, not direct observations. Skill scores here measure",
-        "> consistency with ERA5. Both Aurora1p5 and ERA5 share IFS heritage, which may inflate temperature skill.",
-        "",
-        "---",
-        "",
-        "## Temperature (2m) Verification",
-        "",
-        "| Lead time | MAE (°C) | RMSE (°C) | Bias (°C) |",
-        "|-----------|----------|-----------|-----------|",
-    ]
-    for r in temp_results:
-        if r.get("available"):
-            md_lines.append(
-                f"| +{r['lead_h']}h | {r['MAE_C']:.2f} | {r['RMSE_C']:.2f} | {r['bias_C']:+.2f} |"
-            )
-        else:
-            md_lines.append(f"| +{r['lead_h']}h | N/A | N/A | N/A |")
-
-    if mean_t_mae is not None:
-        md_lines += [
-            "",
-            f"**Domain mean:** MAE = {mean_t_mae:.2f}°C  |  RMSE = {mean_t_rmse:.2f}°C  |  Bias = {mean_t_bias:+.2f}°C",
-        ]
-
-    md_lines += [
-        "",
-        "---",
-        "",
-        "## Precipitation Verification",
-        "",
-        "### Continuous metrics (mm / 1-hour accumulation)",
-        "",
-        "| Lead time | MAE (mm) | RMSE (mm) | Bias (mm) |",
-        "|-----------|----------|-----------|-----------|",
-    ]
-    for r in precip_results:
-        if r.get("available"):
-            md_lines.append(
-                f"| +{r['lead_h']}h | {r['MAE_mm']:.3f} | {r['RMSE_mm']:.3f} | {r['bias_mm']:+.3f} |"
-            )
-        else:
-            md_lines.append(f"| +{r['lead_h']}h | N/A | N/A | N/A |")
-
-    md_lines += ["", "### Categorical scores (POD / FAR / CSI)"]
-    for thr in PRECIP_THRESHOLDS:
-        key = f"thr_{thr:.1f}mm"
-        md_lines += [f"", f"**Threshold: {thr} mm / 1h**", "", "| Lead time | POD | FAR | CSI |", "|-----------|-----|-----|-----|"]
-        for r in precip_results:
-            if r.get("available") and key in r.get("categorical", {}):
-                cat = r["categorical"][key]
-                md_lines.append(f"| +{r['lead_h']}h | {cat['POD']:.3f} | {cat['FAR']:.3f} | {cat['CSI']:.3f} |")
-            else:
-                md_lines.append(f"| +{r['lead_h']}h | N/A | N/A | N/A |")
-
-    md_lines += [
-        "",
-        "---",
-        "",
-        "## IFS Patched Variables",
-        "",
-        "Four variables required by Aurora1p5 were not available in IFS open data and were zero-filled:",
-        "",
-        "| Variable | Zero-fill deviation | Assessment |",
-        "|----------|--------------------|----------------------------------------------------|",
-        "| `sic` (sea ice) | −0.37σ | Acceptable — Myanmar is tropical, no sea ice |",
-        "| `lcc` (low cloud) | −1.18σ | Moderate impact; tcc provides partial substitute |",
-        "| `mcc` (mid cloud) | −0.80σ | Moderate impact; tcc provides partial substitute |",
-        "| `hcc` (high cloud) | −0.79σ | Minor near-surface impact |",
-        "",
-        "**IFS open data** provides `tcc` (total cloud cover) at step=0, which Aurora1p5 uses as an AR variable.",
-        "Layer fractions (lcc, mcc, hcc) are only available in IFS forecast stream (step>0), not the analysis.",
-        "`sic` is absent from IFS entirely — zero-fill is scientifically sound for tropical Myanmar.",
-        "",
-        "---",
-        "",
-        "## Precipitation Semantics",
-        "",
-        "- Aurora's `scaled_tp_1h` is the log-transformed 1-hour total precipitation in metres",
-        "- Earth2Studio applies `aurora_log_untransform` before zarr: `0.001 × (eˣ − 1)` → metres",
-        "- Pipeline output: `metres × 1000 → mm / 1-hour accumulation`",
-        "- These are **accumulation totals** per forecast hour, not instantaneous rates",
-        "- Display should read: `X mm / 1-hour accumulation`, not `X mm/h`",
-        "",
-        "---",
-        "",
-        "## Limitations",
-        "",
-    ]
-    for lim in verification["limitations"]:
-        md_lines.append(f"- {lim}")
-    md_lines.append("")
-
-    md_out = output_dir / "verification.md"
-    md_out.write_text("\n".join(md_lines))
-    print(f"Verification MD:   {md_out}")
-
-    # ------------------------------------------------------------------
-    # Print summary
-    # ------------------------------------------------------------------
-    n_verified = len([r for r in temp_results if r.get("available")])
-    print(f"\n{'=' * 60}")
-    print(f"Verified {n_verified}/{len(valid_leads)} lead times against ERA5")
-    if mean_t_mae is not None:
-        print(f"Temperature:  mean MAE={mean_t_mae:.2f}°C  bias={mean_t_bias:+.2f}°C")
-    if mean_p_mae is not None:
-        print(f"Precipitation: mean MAE={mean_p_mae:.3f}mm  bias={mean_p_bias:+.3f}mm")
-    print("=" * 60)
-
+    # ── Final summary ────────────────────────────────────────────────────────
+    print(f"\n{'=' * 70}")
+    print("VERIFICATION COMPLETE — exit 0")
+    print(f"{'=' * 70}")
+    wdir_str = (
+        f"{sum_wdir['circular_mae']:.4f}°"
+        if sum_wdir["circular_mae"] is not None
+        else "N/A"
+    )
+    print(
+        f"\n  Temperature (29 frames):\n"
+        f"    MAE={sum_temp['mae']:.4f}°C  "
+        f"RMSE={sum_temp['rmse']:.4f}°C  "
+        f"bias={sum_temp['bias']:+.4f}°C\n"
+        f"\n  Wind speed (29 frames):\n"
+        f"    MAE={sum_wspeed['mae']:.4f} kt  "
+        f"RMSE={sum_wspeed['rmse']:.4f} kt  "
+        f"bias={sum_wspeed['bias']:+.4f} kt\n"
+        f"\n  Wind direction (29 frames, calm excluded):\n"
+        f"    circular MAE={wdir_str}\n"
+        f"\n  Precipitation (28 frames, t+6h→t+168h):\n"
+        f"    MAE={sum_precip['mae']:.4f} mm/hr  "
+        f"RMSE={sum_precip['rmse']:.4f}  "
+        f"bias={sum_precip['bias']:+.4f}\n"
+        f"    POD={sum_precip['pod']}  "
+        f"FAR={sum_precip['far']}  "
+        f"CSI={sum_precip['csi']}\n"
+        f"    ({total_hits} hits / {total_misses} misses / {total_fa} false alarms "
+        f"from {total_hits+total_misses+total_fa:,} total contingency events)"
+    )
     return 0
 
 
@@ -624,42 +711,20 @@ def run_verification(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify Aurora1p5 forecast against ERA5 reanalysis"
+        description="Verify GCOp Myanmar 7-day forecast vs ERA5 (Phase R5)"
     )
     parser.add_argument(
         "--forecast-dir",
-        default="data/forecast",
-        help="Directory containing forecast.json, temperature.bin, precipitation.bin",
+        default="data/forecast_v4",
+        help="Directory containing forecast.json and 4 binary files (default: data/forecast_v4)",
     )
     parser.add_argument(
         "--output-dir",
         default="data/verification",
-        help="Output directory for verification.json and verification.md",
-    )
-    parser.add_argument(
-        "--lead-hours",
-        nargs="+",
-        type=int,
-        default=DEFAULT_LEAD_HOURS,
-        help=f"Lead times to verify (default: {DEFAULT_LEAD_HOURS})",
-    )
-    parser.add_argument(
-        "--era5-source",
-        choices=["arco", "cds"],
-        default="arco",
-        help=(
-            "ERA5 data source. 'arco' (Google Cloud, no credentials needed) is preferred. "
-            "'cds' requires a CDS API key (https://cds.climate.copernicus.eu)."
-        ),
+        help="Output directory for verification.json (default: data/verification)",
     )
     args = parser.parse_args()
-
-    return run_verification(
-        forecast_dir=Path(args.forecast_dir),
-        output_dir=Path(args.output_dir),
-        lead_hours=sorted(set(args.lead_hours)),
-        era5_source=args.era5_source,
-    )
+    return run_verification(Path(args.forecast_dir), Path(args.output_dir))
 
 
 if __name__ == "__main__":

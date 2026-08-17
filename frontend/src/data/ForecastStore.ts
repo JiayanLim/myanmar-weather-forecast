@@ -4,14 +4,16 @@ import type { ActiveVariable, ForecastMetadata, PlaybackSpeed } from './types';
 interface ForecastState {
   // Data
   metadata: ForecastMetadata | null;
-  precipitation: Float32Array | null;
-  temperature: Float32Array | null;
+  precipitation:  Float32Array | null;
+  temperature:    Float32Array | null;
+  windSpeed:      Float32Array | null;
+  windDirection:  Float32Array | null;
   isLoaded: boolean;
   isLoading: boolean;
   error: string | null;
 
   // UI state
-  currentHour: number;         // frame index 0–(n_times-1)
+  currentHour: number;         // frame index 0–(n_frames-1)
   activeVariable: ActiveVariable;
   isPlaying: boolean;
   playbackSpeed: PlaybackSpeed;
@@ -25,9 +27,16 @@ interface ForecastState {
 
   // Panel visibility
   showInfoPanel: boolean;
+  showModelEvaluation: boolean;
 
   // Actions
-  setData: (metadata: ForecastMetadata, precipitation: Float32Array, temperature: Float32Array) => void;
+  setData: (
+    metadata: ForecastMetadata,
+    precipitation: Float32Array,
+    temperature: Float32Array,
+    windSpeed: Float32Array,
+    windDirection: Float32Array,
+  ) => void;
   setError: (error: string) => void;
   setLoading: (loading: boolean) => void;
   setHour: (hour: number) => void;
@@ -41,12 +50,15 @@ interface ForecastState {
   setMaskError: (err: string) => void;
   setInspectorPoint: (point: { lat: number; lon: number } | null) => void;
   toggleInfoPanel: () => void;
+  toggleModelEvaluation: () => void;
 }
 
 export const useForecastStore = create<ForecastState>((set, get) => ({
   metadata: null,
-  precipitation: null,
-  temperature: null,
+  precipitation:  null,
+  temperature:    null,
+  windSpeed:      null,
+  windDirection:  null,
   isLoaded: false,
   isLoading: false,
   error: null,
@@ -60,21 +72,22 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
   maskError: null,
   inspectorPoint: null,
   showInfoPanel: false,
+  showModelEvaluation: false,
 
-  setData: (metadata, precipitation, temperature) =>
-    set({ metadata, precipitation, temperature, isLoaded: true, isLoading: false, error: null }),
+  setData: (metadata, precipitation, temperature, windSpeed, windDirection) =>
+    set({ metadata, precipitation, temperature, windSpeed, windDirection, isLoaded: true, isLoading: false, error: null }),
 
   setError: (error) => set({ error, isLoading: false }),
   setLoading: (loading) => set({ isLoading: loading }),
 
   setHour: (hour) => {
-    const max = (useForecastStore.getState().metadata?.n_times ?? 9) - 1;
+    const max = (useForecastStore.getState().metadata?.n_frames ?? 29) - 1;
     set({ currentHour: Math.max(0, Math.min(max, hour)) });
   },
 
   stepForward: () => {
     const { currentHour, metadata } = get();
-    const maxHour = (metadata?.n_times ?? 9) - 1;
+    const maxHour = (metadata?.n_frames ?? 29) - 1;
     set({ currentHour: Math.min(currentHour + 1, maxHour) });
   },
 
@@ -94,4 +107,5 @@ export const useForecastStore = create<ForecastState>((set, get) => ({
   setMaskError: (err) => set({ maskError: err }),
   setInspectorPoint: (point) => set({ inspectorPoint: point }),
   toggleInfoPanel: () => set((s) => ({ showInfoPanel: !s.showInfoPanel })),
+  toggleModelEvaluation: () => set((s) => ({ showModelEvaluation: !s.showModelEvaluation })),
 }));

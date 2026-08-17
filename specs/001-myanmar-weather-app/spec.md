@@ -4,287 +4,323 @@
 **Created**: 2026-08-09
 **Revised**: 2026-08-11 v2 — Aurora1p5 → GraphCastSmall; 168h/0.25° → 24h/1.0°; temp removed
 **Revised**: 2026-08-11 v3 — MAJOR: 24h → 48h; temperature + precipitation; schema v3.0; M4 CPU validated
-**Status**: Approved — Architecture validated on Apple M4 CPU
-**Constitution**: `.specify/memory/constitution.md` v2.0.0
+**Revised**: 2026-08-12 v4 (draft) — MAJOR: new target 7-day / 4-variable / ERA5 init / model TBD
+**Revised**: 2026-08-16 v5 — Section B updated: GCOp confirmed, all TBDs resolved, FRs updated
+**Revised**: 2026-08-17 v6 — FR-N40–N45 COMPLETE; ADR-023 closed; R4/R5 COMPLETE
+**Status**: LEGACY (v3) deployed. NEW TARGET (v4) R4/R5 COMPLETE — R6 NOT STARTED.
+**Constitution**: `.specify/memory/constitution.md` v3.2.0
 
 ---
 
-## Constitution Check
+## DOCUMENT SCOPE
+
+This spec contains two sections:
+
+**Section A — Legacy Baseline (v3.0, DEPLOYED)**
+The current production architecture: GraphCastSmall, 48h, 2 variables, M4 CPU.
+These requirements are implemented and live. Do NOT modify this section to reflect
+the new target unless implementing the new target.
+
+**Section B — New Target (v4.0, RESEARCH PHASE)**
+The new project direction: 7-day forecast, 4 variables, ERA5 2021-01-01 initialization,
+model TBD. These requirements are DRAFTS — they will be revised once the model is selected.
+
+---
+
+## SECTION A — LEGACY BASELINE (v3.0, DEPLOYED)
+
+### Constitution Check (Legacy)
 
 | Principle | Requirement | Design Decision | Status |
 |-----------|-------------|-----------------|--------|
-| I. Static-First | No runtime server | All data pre-generated; GitHub Pages CDN only | ✓ |
-| II. Earth2Studio-Mandatory | GraphCastSmall + ARCO/IFS init | `GraphCastSmall` + `earth2studio.data.ARCO` or `IFS` | ✓ |
-| III. Forecast-Artifact Pipeline | Standalone scripts; 6h steps; 48h horizon | `scripts/generate_forecast.py`; 9 frames (t+0…t+48h) | ✓ |
-| III. Two-timestep init | t-6h and t+0h required | Both fetched before inference | ✓ |
-| III. No log transform | tp06 already in physical metres | Convert ×1000 only; no exp() | ✓ |
-| IV. Myanmar-Focused | bbox 92°E–102°E, 9°N–29°N | xarray/numpy spatial subset in pipeline | ✓ |
-| V. Map-First UX | Map dominates viewport | MapLibre GL JS full-viewport | ✓ |
-| VI. Native-Step Navigation | 6h steps, no interpolation | 9 native frames; 6h slider steps | ✓ |
-| VI. tp06 semantics | 6h accumulation, not instantaneous | UI label: mm/6h with mandatory disclosure | ✓ |
-| VII. Model-Agnostic Frontend | metadata.json drives all model display | No GraphCast strings in TypeScript | ✓ |
-| VIII. Performance | Load < 5s; transition < 200ms | Float32 binary ≈ 16.6 KB total; all loaded at once | ✓ |
-| IX. Climate-Honest | All metadata shown; tp06 semantics disclosed | Header + InfoPanel + tp06 tooltip | ✓ |
-| X. Minimal Scope | No databases, accounts, paid APIs | pipeline → static files → GitHub Pages | ✓ |
-| XI. Hardware Transparency | Hardware validated; recorded in forecast.json | M4 CPU validated: ~78s, 2.34 GB RSS | ✓ |
-| XII. Resolution Honesty | Disclose native 1.0° vs. display resolution | InfoPanel states interpolation cannot add model info | ✓ |
+| I. Static-First | No runtime server | All data pre-generated; GitHub Pages CDN only | ✓ DONE |
+| II. Earth2Studio-Mandatory | GraphCastSmall + ARCO/IFS init | `GraphCastSmall` + `earth2studio.data.ARCO` or `IFS` | ✓ DONE |
+| III. Forecast-Artifact Pipeline | Standalone scripts; 6h steps; 48h horizon | `scripts/generate_forecast.py`; 9 frames | ✓ DONE |
+| IV. Myanmar-Focused | bbox 92°E–102°E, 9°N–29°N | xarray/numpy spatial subset in pipeline | ✓ DONE |
+| V. Map-First UX | Map dominates viewport | MapLibre GL JS full-viewport | ✓ DONE |
+| VI. Native-Step Navigation | 6h steps, no interpolation | 9 native frames; 6h slider steps | ✓ DONE |
+| VI. tp06 semantics | 6h accumulation, not instantaneous | UI label: mm/6h with mandatory disclosure | ✓ DONE |
+| VII. Model-Agnostic Frontend | metadata.json drives all model display | No GraphCast strings in TypeScript | ✓ DONE |
+| VIII. Performance | Load < 5s; transition < 200ms | Float32 binary ≈ 16.6 KB total | ✓ DONE |
+| IX. Climate-Honest | All metadata shown; tp06 semantics disclosed | Header + InfoPanel + tp06 tooltip | ✓ DONE |
+| X. Minimal Scope | No databases, accounts, paid APIs | pipeline → static files → GitHub Pages | ✓ DONE |
+| XI. Hardware Transparency | Hardware validated; recorded in forecast.json | M4 CPU: ~78s, 2.34 GB RSS | ✓ DONE |
+| XII. Resolution Honesty | Disclose native 1.0° vs. display resolution | InfoPanel states interpolation policy | ✓ DONE |
 
----
+### Legacy Validated Architecture Summary
 
-## User Scenarios & Testing
+- **Model**: GraphCastSmall (Earth2Studio 0.17.0)
+- **Initialization**: ARCO (historical ERA5, 1959–2023) or IFS (operational)
+- **Horizon**: 48h (8 AR steps + t+0h init = 9 frames)
+- **Variables**: tp06 → mm/6h (precipitation); t2m → °C (temperature)
+- **Grid**: Myanmar 21 × 11 at 1.0° (lat 9–29°N, lon 92–102°E)
+- **Hardware**: Apple M4 CPU, JAX XLA ARM64, ~78s, 2.34 GB RSS
+- **Schema**: v3.0
+- **Deployment**: GitHub Pages (live)
 
-### User Story 1 — View Myanmar Weather Map (Priority: P1)
+### Legacy Functional Requirements (Python Pipeline) — IMPLEMENTED
 
-A meteorologist or general user opens the application and immediately sees an interactive weather
-map centered on Myanmar, showing temperature or precipitation at the forecast initialization hour.
+- **FR-001**: Uses `earth2studio.models.px.GraphCastSmall`
+- **FR-002**: ARCO or IFS only; NCAR_ERA5 and GFS prohibited
+- **FR-003**: Fetches two consecutive timesteps (t−6h, t+0h) before inference
+- **FR-004**: No log or exponential transform on tp06
+- **FR-005**: tp06 extracted, metres × 1000 → mm/6h, clamped ≥ 0; t+0h = 0.0
+- **FR-006**: 9 frames (t+0h through t+48h, 6h step)
+- **FR-007**: No interpolation between frames
+- **FR-008**: Myanmar bbox subset: lat 9–29°N, lon 92–102°E, 21 × 11 at 1.0°
+- **FR-009**: forecast.json schema v3.0 with full transformation provenance
+- **FR-010**: Validation: no NaN, monotonic timestamps, tp06 ≥ 0, tp06 < threshold, t2m in range
+- **FR-011**: Inference hardware and peak RSS recorded in forecast.json
+- **FR-012**: Demo data: no GPU; is_demo=true; 9 frames synthetic; 21 × 11 grid
+- **FR-013**: t2m extracted, K − 273.15 → °C
 
-**Why this priority**: The map is the application's entire value proposition.
+### Legacy Functional Requirements (Frontend) — IMPLEMENTED
 
-**Independent Test**: Open the app with demo data — the map renders Myanmar with a colored
-overlay, a legend, the forecast timestamp, and the model name in the header.
+- **FR-020**: Interactive MapLibre GL JS map centered on Myanmar (~96°E, 19°N)
+- **FR-021**: Precipitation OR temperature colored raster overlay (activeVariable)
+- **FR-022**: Myanmar national boundary GeoJSON layer
+- **FR-023**: Timeline slider across 9 steps (t+0h to t+48h)
+- **FR-024**: Previous / Next step buttons (6h increment, boundary clamping)
+- **FR-025**: Play/Pause animation with speed selection (0.5×, 1×, 2×, 4×)
+- **FR-026**: Forecast valid date, UTC time, lead time offset displayed
+- **FR-027**: Variable-aware legend (mm/6h for precipitation, °C for temperature)
+- **FR-028**: Point-inspect popup on map click with both variable values
+- **FR-029**: "DEMO DATA" banner when forecast.json has is_demo=true
+- **FR-030**: Model name, resolution, init time in header (from forecast.json)
+- **FR-031**: Info/About panel with full metadata and attribution
+- **FR-032**: Precipitation disclosure: 6-hour accumulation period
+- **FR-033**: All model details read from forecast.json; no hardcoded strings in TypeScript
+- **FR-034**: Interpolation disclosure if display resolution differs from native 1.0°
+- **FR-035**: Variable switcher (Precip / Temp) updating map, legend, popup simultaneously
 
-**Acceptance Scenarios**:
+### Legacy Non-Functional Requirements — VALIDATED
 
-1. **Given** a user opens the app, **When** the page loads, **Then** the map is centered on
-   Myanmar (~96°E, 19°N), the precipitation overlay is visible by default, a mm/6h legend is
-   shown, and the header displays the model name and initialization time.
-2. **Given** the app has loaded, **When** the user pans the map, **Then** the weather overlay
-   remains synchronized.
-3. **Given** the app has loaded, **When** the user zooms, **Then** the overlay scales correctly.
-4. **Given** the app is running with demo data, **When** the page loads, **Then** a clearly
-   visible "DEMO DATA" banner appears.
-
----
-
-### User Story 2 — Navigate Forecast Step by Step (Priority: P1)
-
-A user steps through 8 forecast steps (t+6h, …, t+48h), watching the map, timestamp, and lead
-time update at each 6-hour step.
-
-**Why this priority**: The constitution (§VI) makes native-step navigation non-negotiable.
-
-**Independent Test**: With demo data, moving the slider through all 9 frames produces 9 distinct
-map states with correct timestamps (init_time + N hours).
-
-**Acceptance Scenarios**:
-
-1. **Given** the app has loaded, **When** the user drags the slider to step t+12h, **Then**
-   the map shows the t+12h forecast, the timestamp shows init_time + 12h UTC, and the lead time
-   displays "+12 h".
-2. **Given** the user presses Next Step, **Then** the step advances by 6h and the map updates.
-3. **Given** the current step is t+48h, **When** the user presses Next, **Then** nothing changes
-   (boundary clamping).
-4. **Given** the current step is t+0h, **When** the user presses Previous, **Then** nothing changes.
-
----
-
-### User Story 3 — Animate the Forecast (Priority: P2)
-
-A user presses Play and watches the forecast animate through all 9 steps. Speed controls change
-the tick interval.
-
-**Acceptance Scenarios**:
-
-1. **Given** the user presses Play, **Then** the forecast advances 1 step per tick at the
-   selected playback speed.
-2. **Given** animation is playing, **When** Pause is pressed, **Then** animation stops.
-3. **Given** animation reaches t+48h, **Then** it loops back to t+0h.
-4. **Given** 4× speed is selected, **Then** the tick interval is 1000/4 = 250ms.
-
----
-
-### User Story 4 — Switch Between Temperature and Precipitation (Priority: P2)
-
-A user clicks "Temp" or "Precip" in the VariableSwitcher and the map, legend, and popup all
-update to show the selected variable.
-
-**Acceptance Scenarios**:
-
-1. **Given** the app has loaded, **When** the user clicks "Temp", **Then** the map shows the
-   temperature overlay (°C color scale) and the legend updates.
-2. **Given** temperature is active, **When** the user clicks "Precip", **Then** the map reverts
-   to precipitation (mm/6h).
-3. **Given** a popup is open showing temperature, **When** the user switches to precipitation,
-   **Then** the popup immediately shows precipitation values.
-
----
-
-### User Story 5 — Click Map for Point Values (Priority: P2)
-
-A user clicks anywhere on the Myanmar map and sees a popup with the values for both variables
-at that grid point for the currently selected forecast step.
-
-**Acceptance Scenarios**:
-
-1. **Given** the user clicks within Myanmar bbox, **Then** a popup shows: nearest 1° grid
-   point lat/lon, active variable value prominently, other variable dimmed.
-2. **Given** a popup is open and the user moves the slider, **Then** popup values update.
-3. **Given** the user clicks outside the Myanmar bbox, **Then** the popup shows "Outside
-   forecast domain."
-
----
-
-### User Story 6 — View Forecast Metadata & Attribution (Priority: P3)
-
-A user opens the About panel and reads forecast model details, data sources, variable
-semantics, and limitations.
-
-**Acceptance Scenarios**:
-
-1. **Given** the user clicks the Info button, **Then** a panel opens showing: model (from
-   forecast.json), resolution (1.0°, native), init source, init time, both variable descriptions
-   (precipitation 6-hour accumulation, mm/6h; temperature 2m, °C), limitations, and attribution.
-2. **Given** the forecast is demo data, **Then** the panel explicitly states
-   "DEMO DATA — not for operational use."
-
----
-
-### Edge Cases
-
-- **forecast.json fails to load**: Show error message "Forecast data unavailable. Try refreshing."
-- **NaN values in forecast array**: Render as transparent (no color), not zero.
-- **Mobile viewport (≥320px)**: Map remains usable; controls stack vertically.
-- **tp06 negative**: Clamp to 0 (negative precipitation is physically impossible).
-- **t+0h frame**: Temperature is analysis state; precipitation is 0.0 (no accumulation).
-- **Very high precipitation values**: Cap legend at 100 mm/6h; higher values at maximum color.
-
----
-
-## Requirements
-
-### Functional Requirements — Forecast Pipeline (Python)
-
-- **FR-001**: Pipeline MUST use `earth2studio.models.px.GraphCastSmall` as the prognostic model
-- **FR-002**: Pipeline MUST use `earth2studio.data.ARCO` or `earth2studio.data.IFS` as the
-  initialization source; NCAR_ERA5 and GFS MUST NOT be used
-- **FR-003**: Pipeline MUST fetch TWO consecutive time steps (t−6h and t+0h) from the
-  initialization source before inference begins
-- **FR-004**: Pipeline MUST NOT apply a log or exponential transform to `tp06`; the only
-  required conversion is metres × 1000 = mm / 6h
-- **FR-005**: Pipeline MUST extract `tp06` from GraphCastSmall output and convert from metres
-  to mm (× 1000), clamping to ≥ 0; set t+0h frame to 0.0
-- **FR-006**: Pipeline MUST produce 8 genuine 6-hourly forecast frames (t+6h through t+48h)
-  plus a t+0h initialization frame = 9 total frames
-- **FR-007**: Pipeline MUST NOT interpolate between 6-hourly frames
-- **FR-008**: Pipeline MUST subset output to Myanmar bbox: lat 9°N–29°N, lon 92°E–102°E
-  (21 × 11 points at 1.0°)
-- **FR-009**: Pipeline MUST write `forecast.json` with full schema v3.0 metadata including
-  provenance for both tp06 and t2m transformations
-- **FR-010**: Pipeline MUST validate output (no NaN in expected fields, monotonic timestamps,
-  tp06 ≥ 0, tp06 < configurable max threshold, t2m in [-90°C, 70°C])
-- **FR-011**: Pipeline MUST record the inference hardware and peak RSS in `inference_config`
-  field of forecast.json
-- **FR-012**: Demo data generation MUST NOT require a GPU; must set `is_demo: true`; must
-  produce 9 frames of synthetic precipitation and temperature data in the 21 × 11 grid
-- **FR-013**: Pipeline MUST extract `t2m` from GraphCastSmall output and convert from Kelvin
-  to Celsius (K − 273.15)
-
-### Functional Requirements — Frontend (React + TypeScript)
-
-- **FR-020**: App MUST render an interactive MapLibre GL JS map centered on Myanmar (~96°E, 19°N)
-- **FR-021**: App MUST render precipitation (tp06) OR temperature (t2m) as a colored raster
-  overlay depending on `activeVariable`
-- **FR-022**: App MUST display Myanmar national boundary as a GeoJSON line layer
-- **FR-023**: App MUST provide a timeline slider across all 9 available forecast steps (t+0h to t+48h)
-- **FR-024**: App MUST provide Previous / Next step buttons stepping in 6h increments, with
-  boundary clamping
-- **FR-025**: App MUST provide Play/Pause animation with speed selection (0.5×, 1×, 2×, 4×)
-- **FR-026**: App MUST display: forecast valid date, UTC time, and lead time offset for the
-  current step (Forecast +0h through +48h)
-- **FR-027**: App MUST display a variable-aware legend — mm/6h for precipitation, °C for
-  temperature
-- **FR-028**: App MUST show a point-inspect popup on map click with both variable values at
-  the clicked grid point
-- **FR-029**: App MUST display a "DEMO DATA" banner when `forecast.json` has `is_demo: true`
-- **FR-030**: App MUST display model name, resolution, and init time in the header (from
-  `forecast.json`)
-- **FR-031**: App MUST include an Info/About panel with full metadata and attribution for both
-  variables
-- **FR-032**: App MUST include a precipitation disclosure: "Precipitation values represent
-  total rainfall accumulated during the 6-hour forecast period ending at the displayed time."
-- **FR-033**: App MUST read ALL model details from `forecast.json`; no model names, resolutions,
-  or variable names MUST be hard-coded in TypeScript source
-- **FR-034**: If display resolution differs from native 1.0° model resolution, the UI MUST
-  state that interpolation does not add forecast information
-- **FR-035**: App MUST include a variable switcher (Precip / Temp buttons) that updates the
-  map overlay, legend, and popup simultaneously
-
-### Functional Requirements — Deployment
-
-- **FR-040**: App MUST deploy to GitHub Pages as a fully static site
-- **FR-041**: GitHub Actions `deploy-pages.yml` MUST build frontend and copy either real or
-  demo data on push to main; real data preferred when all 3 artifacts are present
-- **FR-042**: All asset paths MUST work under a GitHub Pages repository subpath
-- **FR-043**: Page refresh MUST NOT break the application
-
----
-
-## Non-Functional Requirements
-
-- **NFR-001**: Initial load < 5 seconds on ≥25 Mbps broadband, cold cache
+- **NFR-001**: Initial load < 5s on ≥25 Mbps, cold cache
 - **NFR-002**: Step-to-step transition < 200ms after data loaded
-- **NFR-003**: Total forecast data payload < 1 MB (validated: ~16.6 KB — no lazy loading required)
-- **NFR-004**: No secrets, credentials, or API keys committed to repository
-- **NFR-005**: No proprietary API keys required for the deployed static frontend
-- **NFR-006**: TypeScript compilation MUST have no avoidable `any` types or errors
-- **NFR-007**: Python pipeline code MUST pass `ruff` linting and formatting
-- **NFR-008**: Precipitation MUST be correctly labeled as 6-hour accumulation, not instantaneous
-- **NFR-009**: The InfoPanel MUST disclose native 1.0° model resolution; if display is
-  interpolated, the disclosure MUST state interpolation does not add model information
+- **NFR-003**: Total forecast data payload < 1 MB (validated: ~16.6 KB)
+- **NFR-004**: No secrets/credentials committed to repository
+- **NFR-005**: No proprietary API keys in deployed static frontend
+- **NFR-006**: TypeScript: no errors
+- **NFR-007**: Python pipeline: ruff linting
+- **NFR-008**: Precipitation correctly labeled as 6-hour accumulation
+- **NFR-009**: Native 1.0° resolution disclosed; interpolation policy stated
 
 ---
 
-## Key Entities
+## SECTION B — NEW TARGET (v4.0, RESEARCH PHASE)
 
-- **ForecastRun**: A pipeline execution. Attributes: `init_time`, `model`, `init_source`,
-  `resolution`, `generated_at`, `is_demo`, `inference_config` (hardware + RSS record).
-- **ForecastFrame**: One 6h timestep of one variable. Attributes: `valid_time`, `lead_hours`,
-  `variable`, `data [n_lat × n_lon]`.
-- **ForecastArtifact**: Binary files (`temperature.bin`, `precipitation.bin`) + `forecast.json`
-  consumed by the frontend.
-- **Variable**: `precipitation` (tp06, mm/6h, 6h accumulation) and `temperature` (t2m, °C).
-- **ActiveVariable**: The currently displayed variable — toggled by VariableSwitcher.
-- **GridPoint**: One 1.0° lat/lon point in the Myanmar subset (21 × 11 grid).
+**Status**: Architecture confirmed. R1/R2/R3 COMPLETE. R4 IN PROGRESS.
+Requirements marked [CONFIRMED] are locked. Phase-gated implementation per tasks.md.
 
----
+### Constitution Check (New Target — UPDATED 2026-08-16)
 
-## Success Criteria
+| Principle | New Target Design | Status |
+|-----------|------------------|--------|
+| I. Static-First | All data pre-generated; static GitHub Pages | ✓ PRESERVED |
+| II. Earth2Studio-Mandatory | GraphCastOperational; ERA5/ARCO init | ✓ CONFIRMED (ADR-012, R3 PASS) |
+| III. Pipeline | GCOp 0.25°/168h/29 frames/4 vars/schema v4.0 | ✓ CONFIRMED (R4 in progress) |
+| IV. Myanmar-Focused | Myanmar 81×41 at 0.25°; lat 9–29°N, lon 92–102°E | ✓ CONFIRMED (ADR-017, R3) |
+| V. Map-First UX | 4-variable selector; map dominates | Pending Phase R7 |
+| VI. Native-Step Navigation | 6h native timestep; 29 frames; no interpolation | ✓ CONFIRMED (GCOp 6h) |
+| VI. Precipitation semantics | tp06 metres×1000/6=mm/hr; 6h period average | ✓ CONFIRMED (ADR-021) |
+| VI. Wind direction semantics | Meteorological FROM; vector-component interpolation | ✓ CONFIRMED (ADR-020) |
+| VII. Model-Agnostic | All model details from forecast.json; no model strings in TS | Pending Phase R6/R7 |
+| VIII. Performance | 1.54 MB payload; load-all-at-startup; < 5s | ✓ CONFIRMED (ADR-022) |
+| IX. Climate-Honest | 4-variable disclosures; ERA5 init role; limitation text | Pending Phase R7 |
+| XI. Hardware Transparency | M4 24 GB, peak 6 GB, ~25 min/step recorded | ✓ CONFIRMED (ADR-018) |
+| XII. Resolution Honesty | 0.25° (~28 km); display 0.05° interpolated; wind dir special | ✓ CONFIRMED (ADR-020) |
 
-- **SC-001**: User opens GitHub Pages URL and sees Myanmar weather map within 5 seconds
-- **SC-002**: User navigates slider through all 9 steps (t+0 to t+48h); map updates with
-  correct timestamp at each step
-- **SC-003**: User plays animation through all 9 steps without freeze
-- **SC-004**: User clicks Myanmar map; popup shows both tp06 (mm/6h) and t2m (°C)
-- **SC-005**: Earth2Studio GraphCastSmall pipeline generates a Myanmar forecast with ARCO/IFS
-  initialization
-- **SC-006**: Precipitation is labeled "mm / 6h" with disclosure explaining 6-hour accumulation
-- **SC-007**: GitHub Actions workflow deploys frontend to GitHub Pages on push to main
-- **SC-008**: `forecast.json` records both tp06 and t2m transformation provenance
-- **SC-009**: InfoPanel discloses 1.0° native model resolution and interpolation policy
+### New Target Overview
 
----
+**Objective**: Produce a scientifically meaningful 7-day forecast over Myanmar using
+GraphCastOperational with ERA5 historical initialization (2021-01-01), and expose four
+meteorological variables (precipitation, wind direction, wind speed, temperature) in
+an interactive map UI.
 
-## Assumptions
+**Confirmed architecture** (R1/R2/R3 COMPLETE):
+- Model: `earth2studio.models.px.GraphCastOperational` (0.25°, 6h, JAX/Haiku)
+- Initialization: ERA5 via ARCO; two timesteps: 2020-12-31T18Z + 2021-01-01T00Z
+- Init role: atmospheric state for forecast start date (NOT training or fine-tuning)
+- Forecast period: 2021-01-01T00:00:00Z → 2021-01-08T00:00:00Z (168h / 7 days)
+- Output: 29 frames at 6h steps, 4 variables, Myanmar 81×41 at 0.25°, schema v4.0
 
-- Earth2Studio ≥ 0.17.0 with xarray < 2026 (pinned; xr.Dataset constructor changed in 2026)
-- Apple M4 CPU is the validated production inference hardware (~78s, 2.34 GB RSS)
-- ARCO accessible via Google Cloud (no credentials; historical data only to ~2023)
-- IFS open data accessible at forecast generation time (operational, no credentials)
-- GraphCastSmall weights downloaded automatically via `GraphCastSmall.load_default_package()`
-- Myanmar boundary GeoJSON sourced from Natural Earth (public domain)
-- Basemap: OSM-based open tiles (no API key required)
-- Python pipeline: uv virtual environment, pyproject.toml
-- Frontend: React 18, TypeScript 5, Vite 5, MapLibre GL JS 4, Tailwind CSS 3, Zustand
+### New Target User Stories (DRAFT)
 
----
+#### User Story 1 — View Myanmar 7-Day Weather Map [P1, DRAFT]
 
-## Out of Scope (MVP)
+A user opens the app and immediately sees a weather map centered on Myanmar, showing
+one of four meteorological variables at the initialization hour.
 
-- Forecast horizon beyond 48h
-- Ensemble/probabilistic forecasting
-- Wind speed/direction visualization
+**Acceptance scenarios**:
+1. Map renders Myanmar with colored overlay for the selected variable; legend shows correct units
+2. Header shows model name, resolution, init time (2021-01-01T00:00:00Z), data source (ERA5)
+3. Variable selector shows four options: Precipitation / Wind Direction / Wind Speed / Temperature
+
+#### User Story 2 — Navigate 7-Day Forecast [P1, CONFIRMED]
+
+A user steps through all forecast frames from t+0h to t+168h at 6h native steps.
+
+**Acceptance scenarios**:
+1. Timeline shows 29 frames from t+0h to t+168h at 6h intervals
+2. Lead time markers at 0·24·48·72·96·120·144·168h (every 4th frame)
+3. All four variables update synchronously when step changes
+
+#### User Story 3 — Switch Between Four Variables [P1, DRAFT]
+
+A user switches between precipitation, wind direction, wind speed, and temperature.
+Each switch updates the map overlay, legend, and popup.
+
+**Acceptance scenarios**:
+1. Precipitation: map shows mm/hr raster; legend shows mm/hr scale
+2. Wind Direction: map shows direction field (color wheel or compass); legend shows degrees
+3. Wind Speed: map shows speed raster; legend shows knot scale
+4. Temperature: map shows °C raster; legend shows °C scale
+
+#### User Story 4 — View Point Values [P2, DRAFT]
+
+A user clicks Myanmar map; popup shows all four variable values at that grid point.
+
+#### User Story 5 — View Model Evaluation Popup [P3, FUTURE]
+
+A user opens a "Historical Model Evaluation" popup showing skill metrics vs ERA5
+for the 2021-01-01 to 2021-01-08 period. This is a FUTURE requirement.
+Do NOT implement until the forecast pipeline is working and verified.
+
+**Evaluation popup content (FUTURE)**:
+- Section header: "Historical Model Evaluation" (NOT "accuracy of current forecast")
+- Reference: ERA5 analysis (not station observations) — clearly disclosed
+- Temperature: MAE, RMSE, Bias by lead time
+- Precipitation: MAE, RMSE, Bias; POD/FAR/CSI at key thresholds
+- Wind speed: MAE, RMSE, Bias
+- Wind direction: circular MAE
+- Caveats: reanalysis reference; single forecast cycle; scale mismatch
+
+### New Target Functional Requirements (CONFIRMED — locked 2026-08-16)
+
+#### Pipeline Requirements [CONFIRMED]
+
+- **FR-N01**: Pipeline uses `earth2studio.models.px.GraphCastOperational`
+- **FR-N02**: Initialization source: ARCO ERA5; two timesteps: 2020-12-31T18Z + 2021-01-01T00Z
+- **FR-N03**: Pipeline fetches two consecutive timesteps (t−6h, t+0h) via Earth2Studio ARCO source
+- **FR-N04**: Pipeline produces 168h / 7-day forecast; 28 AR steps; 29 frames (t+0h through t+168h)
+- **FR-N05**: Pipeline extracts and converts all four variables with documented provenance [CONFIRMED]:
+  - Precipitation: tp06 (metres/6h) → metres×1000/6 → mm/hr, clamp ≥ 0 (ADR-021)
+  - Wind direction: u10m, v10m (m/s) → (270−atan2d(v,u)) mod 360 → °FROM
+  - Wind speed: u10m, v10m (m/s) → sqrt(u²+v²)×1.94384 → knots
+  - Temperature: t2m (Kelvin) → K−273.15 → °C
+- **FR-N06**: No interpolation between native timesteps (6h steps only)
+- **FR-N07**: Myanmar bbox subset after global inference: lat 9.0–29.0°N, lon 92.0–102.0°E,
+  81×41 at 0.25° (lat ascending, verified from actual model output_coords)
+- **FR-N08**: forecast.json schema v4.0 with full transformation provenance for all 4 variables (ADR-019)
+- **FR-N09**: Validation: all four variables checked for NaN, Inf, physical plausibility, no negatives
+  for precipitation after clamping. Pre-clamp negative count recorded for provenance.
+- **FR-N10**: forecast.json records: init_time=2021-01-01T00:00:00Z, init_source=ARCO/ERA5,
+  model=GraphCastOperational, model_version, native_timestep_hours=6, forecast_horizon_hours=168,
+  n_times=29, spatial_resolution_deg=0.25, hardware config, per-variable provenance,
+  per-step timing, peak RSS, JAX cache hit/miss status
+
+#### Display Unit Requirements [CONFIRMED — LOCKED]
+
+| Variable | Display unit | Native variable | Conversion | ADR |
+|----------|-------------|----------------|-----------|-----|
+| Precipitation | mm/hr | tp06 (metres/6h) | ×1000/6, clamp ≥ 0 | ADR-021 |
+| Wind Direction | °FROM [0, 360) | u10m, v10m (m/s) | (270−atan2d(v,u)) mod 360 | ADR-020 |
+| Wind Speed | knots | u10m, v10m (m/s) | √(u²+v²)×1.94384 | ADR-018 |
+| Temperature | °C | t2m (Kelvin) | K−273.15 | ADR-018 |
+
+**Units are LOCKED. Conversions are verified from R3 smoke test output (ADR-018).**
+
+#### Frontend Requirements [CONFIRMED — implementation pending Phase R6/R7]
+
+- **FR-N20**: Four-variable selector (Precipitation / Wind Direction / Wind Speed / Temperature)
+- **FR-N21**: Timeline derived dynamically from forecast.json (n_times=29, native_timestep_hours=6)
+- **FR-N22**: Lead time markers at 24h intervals — every 4th frame at 6h step (frames 0,4,8,12,16,20,24,28)
+- **FR-N23**: Variable-aware legend for all four variables with correct units and color scales.
+  Precipitation 0–20 mm/hr; Wind Speed 0–50 kt; Wind Direction color wheel with compass labels;
+  Temperature 15–40 °C.
+- **FR-N24**: Popup displays all four variable values at clicked grid point for current step
+- **FR-N25**: Header: "Myanmar 7-Day AI Weather Forecast" (derived from forecast_horizon_hours=168)
+- **FR-N26**: Info panel: model, 0.25° resolution (~28 km), timestep, init time (2021-01-01T00Z),
+  source (ERA5), per-variable unit disclosures, initialization vs training distinction
+- **FR-N27**: Precipitation disclosure: "Estimated average rainfall rate (mm/hr) during the
+  6-hour period ending at the displayed time. Derived from 6-hour accumulated total (tp06)."
+- **FR-N28**: Wind direction disclosure: "Meteorological convention — direction FROM which wind
+  blows, measured clockwise from North."
+- **FR-N29**: All forecast metadata consumed from forecast.json; no model-specific constants in TypeScript
+- **FR-N11**: `colorscales.ts` MODEL_STEP MUST be derived from `metadata.spatial_resolution_deg`
+  at runtime. It MUST NOT be hardcoded. (Critical bug: current code has MODEL_STEP=1.0 which
+  produces incorrect bilinear interpolation at 0.25° grid spacing.)
+- **FR-N12**: Wind direction rendering MUST use vector-component bilinear interpolation (ADR-020).
+  The generic `renderWithInterpolation` MUST NOT be called with wind direction degree values.
+  A dedicated `renderWindDirection` function (or equivalent) MUST implement sin/cos interpolation.
+- **FR-N13**: `ForecastLoader.ts` MUST fetch all 4 binary files in parallel using `Promise.all`.
+  `ForecastStore.ts` MUST hold all 4 Float32Arrays from startup (ADR-022).
+  The loading spinner MUST remain until all 4 arrays are available.
+
+#### Evaluation Requirements [FR-N40–FR-N45 COMPLETE; FR-N46 FUTURE]
+
+- **FR-N40**: verify_forecast.py produces verification.json for the 2021-01-01 forecast
+  — COMPLETE: exit 0; data/verification/verification.json schema v2.0 written (2026-08-17)
+
+- **FR-N41**: Temperature: MAE, RMSE, Bias at all native lead times (29 frames)
+  — COMPLETE: MAE=1.3137°C, RMSE=1.6975°C, bias=−0.7595°C (see ADR-023)
+
+- **FR-N42**: Precipitation: MAE, RMSE, Bias; POD/FAR/CSI at 0.1 mm/hr threshold
+  — COMPLETE: MAE=0.0172 mm/hr; POD=0.6343, FAR=0.7279, CSI=0.2352 (28 frames; ADR-023)
+  — ERA5 tp: 1-hour accumulation per timestamp (empirically confirmed); no seam handling
+  — 6h aggregation: sum of 6 consecutive hourly values, clamped ≥0, ×1000/6 → mm/hr
+  — Summary POD/FAR/CSI from total contingency counts (not averaged per-frame ratios)
+  — t+0h excluded from precipitation metrics (GCOp convention: tp06=0 at init)
+
+- **FR-N43**: Wind speed: MAE, RMSE, Bias
+  — COMPLETE: MAE=1.0548 kt, RMSE=1.4027 kt, bias=−0.3911 kt (see ADR-023)
+
+- **FR-N44**: Wind direction: circular MAE; calm wind exclusion < 2 kt
+  — COMPLETE: circular MAE=16.9113°; n_points_active and n_points_calm_excluded recorded
+  — Formula: diff = ((fcst_dir − era5_dir + 180) % 360) − 180; MAE = mean(|diff|)
+
+- **FR-N45**: ERA5 reference: ARCO `gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3`
+  — COMPLETE: 0.25° exact grid match; lat_err=0°, lon_err=0° (no interpolation)
+  — variable `total_precipitation`: 1-hour accumulation ending at each timestamp (confirmed)
+
+- **FR-N46**: ModelEvaluation popup in frontend (FUTURE; do NOT implement yet)
+
+### New Target Non-Functional Requirements [CONFIRMED]
+
+- **NFR-N01**: Initial load < 5s on ≥25 Mbps, cold cache. Payload 1.54 MB loads in ~0.5s. ✓ WITHIN BUDGET
+- **NFR-N02**: Step-to-step transition < 200ms after data loaded (all 4 arrays in memory). ✓ ACHIEVABLE
+- **NFR-N03**: Forecast payload: **1,540,944 bytes ≈ 1.54 MB** (4×29×81×41×4 bytes). CONFIRMED (ADR-022)
+- **NFR-N04**: No secrets committed to repository. GCOp checkpoint is public GCS; ARCO needs no auth.
+- **NFR-N05**: Hardware validated: M4 24 GB, peak ~6 GB RSS during JIT, 1.99 GB post (ADR-018, R3 PASS)
+
+### Key Entities (New Target — CONFIRMED)
+
+- **ForecastRun**: init_time=2021-01-01T00:00:00Z, model=GraphCastOperational,
+  init_source=ARCO/ERA5, horizon=168h, n_times=29, native_timestep_h=6
+- **ForecastFrame**: one model step of one variable at one lead time
+- **ForecastArtifact**: forecast.json (schema v4.0) + 4 float32 binary files
+- **Variable**: precipitation (mm/hr), wind_direction (°FROM), wind_speed (kt), temperature (°C)
+- **ActiveVariable**: currently displayed variable (one of four)
+- **GridPoint**: one lat/lon point in Myanmar 81×41 subset at 0.25°
+
+### Resolved Architecture Questions (all confirmed R1–R3, 2026-08-12–16)
+
+1. **Model**: `earth2studio.models.px.GraphCastOperational` (ADR-012, R3 PASS)
+2. **Precipitation semantics**: tp06, metres/6h accumulation, no log transform, →mm/hr (ADR-021)
+3. **Wind variables**: u10m, v10m at 10m level in m/s (ADR-018)
+4. **Native timestep**: 6h (confirmed from GCOp output_coords)
+5. **Native resolution**: 0.25° (confirmed 721×1440 global grid)
+6. **Hardware**: M4 24 GB; peak ~6 GB RSS during JIT; 1.99 GB post; ~25 min/step (ADR-018)
+7. **Init variables**: 82 variables; q* (specific humidity, not r*); all in ARCO (ADR-017)
+8. **ARCO availability**: CONFIRMED — all 82 vars at 2020-12-31T18Z + 2021-01-01T00Z (ADR-017)
+
+### Out of Scope (New Target MVP)
+
+- Ensemble / probabilistic forecasting
+- Forecast horizons beyond 7 days
+- Wind at pressure levels above the surface (display only near-surface)
 - Real-time automated data ingestion
 - User accounts, authentication, or personalization
 - Mobile-native applications
 - Paid API integrations
-- ERA5 verification against forecast (separate script; see verify_forecast.py)
+- Fine-tuning or retraining of any model

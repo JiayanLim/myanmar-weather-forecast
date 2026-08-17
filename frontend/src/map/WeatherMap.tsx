@@ -4,12 +4,20 @@ import { useForecastStore } from '../data/ForecastStore';
 import { getFrame, getPointValue, nearestGridPoint } from '../data/ForecastLoader';
 import {
   renderWithInterpolation,
+  renderWindDirectionWithInterpolation,
   PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX,
-  TEMP_LUT, TEMP_MIN, TEMP_MAX,
+  TEMP_LUT,        TEMP_MIN,   TEMP_MAX,
+  WIND_LUT_ALPHA,  WIND_MIN,   WIND_MAX,
 } from './colorscales';
 import { DISPLAY_N_LAT, DISPLAY_N_LON } from '../geo/mask';
 
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
+
+/** Compass bearing label for a FROM direction in degrees. */
+function compassLabel(deg: number): string {
+  const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return dirs[Math.round(deg / 22.5) % 16];
+}
 
 export function WeatherMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -18,22 +26,23 @@ export function WeatherMap() {
   const popupRef = useRef<maplibregl.Popup | null>(null);
 
   const {
-    metadata, precipitation, temperature, activeVariable,
+    metadata,
+    precipitation, temperature, windSpeed, windDirection,
+    activeVariable,
     currentHour,
     isLoaded, setInspectorPoint, inspectorPoint,
     mask,
   } = useForecastStore();
 
-  // Position the canvas overlay to match the forecast bbox on the current map view
   const positionOverlay = (map: maplibregl.Map, meta: typeof metadata) => {
     const canvas = overlayCanvas.current;
     if (!canvas || !meta) return;
     const { lon_min, lat_max, lon_max, lat_min } = meta.bbox;
     const nw = map.project([lon_min, lat_max]);
     const se = map.project([lon_max, lat_min]);
-    canvas.style.left = `${nw.x}px`;
-    canvas.style.top = `${nw.y}px`;
-    canvas.style.width = `${Math.max(1, se.x - nw.x)}px`;
+    canvas.style.left   = `${nw.x}px`;
+    canvas.style.top    = `${nw.y}px`;
+    canvas.style.width  = `${Math.max(1, se.x - nw.x)}px`;
     canvas.style.height = `${Math.max(1, se.y - nw.y)}px`;
   };
 
@@ -123,27 +132,39 @@ export function WeatherMap() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Draw weather data onto the HTML canvas overlay
+  // Draw weather overlay onto the canvas
   useEffect(() => {
     const canvas = overlayCanvas.current;
     const map = mapRef.current;
     if (!canvas || !isLoaded || !metadata) return;
 
     const { n_lat, n_lon } = metadata.grid;
+    // MODEL_STEP derived at runtime from metadata (ADR-019 / FR-N11)
+    const modelStep = metadata.native_resolution_deg;
 
-    // Select data array and colorscale for the active variable
-    const data = activeVariable === 'temperature' ? temperature : precipitation;
-    if (!data) return;
+    let rgba: Uint8ClampedArray;
 
-    const [lut, vmin, vmax] =
-      activeVariable === 'temperature'
-        ? [TEMP_LUT, TEMP_MIN, TEMP_MAX]
-        : [PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX];
+    if (activeVariable === 'wind_direction' && windDirection) {
+      const frame = getFrame(windDirection, currentHour, n_lat, n_lon);
+      // Vector-component bilinear interpolation (ADR-020) — raw degrees never interpolated
+      rgba = renderWindDirectionWithInterpolation(frame, modelStep, n_lat, n_lon, mask);
+    } else {
+      const [data, lut, vmin, vmax] =
+        activeVariable === 'temperature' && temperature
+          ? [temperature, TEMP_LUT,       TEMP_MIN, TEMP_MAX]
+          : activeVariable === 'wind_speed' && windSpeed
+          ? [windSpeed,   WIND_LUT_ALPHA, WIND_MIN, WIND_MAX]
+          : precipitation
+          ? [precipitation, PRECIP_LUT_ALPHA, PRECIP_MIN, PRECIP_MAX]
+          : [null, null, 0, 1];
 
-    const frame = getFrame(data, currentHour, n_lat, n_lon);
-    const rgba = renderWithInterpolation(frame, lut, vmin, vmax, n_lat, n_lon, mask);
+      if (!data || !lut) return;
 
-    canvas.width = DISPLAY_N_LON;
+      const frame = getFrame(data, currentHour, n_lat, n_lon);
+      rgba = renderWithInterpolation(frame, lut, vmin, vmax, modelStep, n_lat, n_lon, mask);
+    }
+
+    canvas.width  = DISPLAY_N_LON;
     canvas.height = DISPLAY_N_LAT;
     const ctx = canvas.getContext('2d');
     if (ctx) {
@@ -154,7 +175,7 @@ export function WeatherMap() {
     }
 
     if (map) positionOverlay(map, metadata);
-  }, [isLoaded, metadata, currentHour, precipitation, temperature, activeVariable, mask]);
+  }, [isLoaded, metadata, currentHour, precipitation, temperature, windSpeed, windDirection, activeVariable, mask]);
 
   // Point inspector popup
   useEffect(() => {
@@ -187,21 +208,35 @@ export function WeatherMap() {
       const tempVal = temperature
         ? getPointValue(temperature, currentHour, grid.latIdx, grid.lonIdx, n_lat, n_lon)
         : NaN;
+      const wsVal = windSpeed
+        ? getPointValue(windSpeed, currentHour, grid.latIdx, grid.lonIdx, n_lat, n_lon)
+        : NaN;
+      const wdVal = windDirection
+        ? getPointValue(windDirection, currentHour, grid.latIdx, grid.lonIdx, n_lat, n_lon)
+        : NaN;
 
       const validTime = metadata.times_utc[currentHour] ?? '';
       const dt = new Date(validTime);
       const timeStr = dt.toUTCString().replace(' GMT', ' UTC');
-
       const stepHours = metadata.native_timestep_hours ?? 6;
       const leadH = currentHour * stepHours;
-      const endDt = new Date(dt.getTime() + stepHours * 3_600_000);
-      const startStr = `${dt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
-      const endStr = `${endDt.getUTCHours().toString().padStart(2, '0')}:00 UTC`;
 
-      const activeLabel = activeVariable === 'temperature' ? 'Temperature' : 'Precipitation';
-      const activeVal = activeVariable === 'temperature' ? tempVal : precipVal;
-      const activeUnit = activeVariable === 'temperature' ? '°C' : 'mm';
-      const activeFormatted = isNaN(activeVal) ? '—' : activeVal.toFixed(activeVariable === 'temperature' ? 1 : 2);
+      const fmt = (v: number, dp: number, unit: string) =>
+        isNaN(v) ? '—' : `${v.toFixed(dp)} ${unit}`;
+
+      const wdStr = isNaN(wdVal)
+        ? '—'
+        : `${Math.round(wdVal)}° FROM ${compassLabel(wdVal)}`;
+
+      // Determine active variable label and value for primary display
+      const [activeLabel, activeValStr] =
+        activeVariable === 'temperature'
+          ? ['Temperature',  fmt(tempVal,   1, '°C')]
+          : activeVariable === 'wind_speed'
+          ? ['Wind Speed',   fmt(wsVal,     1, 'kt')]
+          : activeVariable === 'wind_direction'
+          ? ['Wind Direction', wdStr]
+          : ['Precipitation', fmt(precipVal, 2, 'mm/hr')];
 
       content = `
         <div class="wx-popup">
@@ -209,20 +244,26 @@ export function WeatherMap() {
           <div class="wx-popup-time">${timeStr}</div>
           <div class="wx-popup-row">
             <span class="wx-popup-label">${activeLabel}</span>
-            <span class="wx-popup-value">${activeFormatted} ${activeUnit}</span>
+            <span class="wx-popup-value">${activeValStr}</span>
           </div>
           ${activeVariable === 'precipitation'
-            ? `<div class="wx-popup-sub">Accumulation: ${startStr}–${endStr}</div>
-               <div class="wx-popup-note">6-hour accumulated total · not an instantaneous rate</div>`
-            : `<div class="wx-popup-note">2m temperature at forecast valid time</div>`
+            ? `<div class="wx-popup-note">Estimated avg. rainfall rate (6h window)</div>`
+            : activeVariable === 'wind_direction'
+            ? `<div class="wx-popup-note">Meteorological FROM direction</div>`
+            : ''
           }
-          <div class="wx-popup-row" style="margin-top:4px;opacity:0.65">
-            <span class="wx-popup-label">${activeVariable === 'temperature' ? 'Precipitation' : 'Temperature'}</span>
-            <span class="wx-popup-value">${
-              activeVariable === 'temperature'
-                ? (isNaN(precipVal) ? '—' : precipVal.toFixed(2) + ' mm')
-                : (isNaN(tempVal) ? '—' : tempVal.toFixed(1) + ' °C')
-            }</span>
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:6px 0"/>
+          <div class="wx-popup-row" style="opacity:0.65">
+            <span class="wx-popup-label">Temp</span>
+            <span class="wx-popup-value">${fmt(tempVal, 1, '°C')}</span>
+          </div>
+          <div class="wx-popup-row" style="opacity:0.65">
+            <span class="wx-popup-label">Precip</span>
+            <span class="wx-popup-value">${fmt(precipVal, 2, 'mm/hr')}</span>
+          </div>
+          <div class="wx-popup-row" style="opacity:0.65">
+            <span class="wx-popup-label">Wind</span>
+            <span class="wx-popup-value">${fmt(wsVal, 1, 'kt')} ${isNaN(wdVal) ? '' : compassLabel(wdVal)}</span>
           </div>
           <div class="wx-popup-coords">${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E · +${leadH}h lead</div>
         </div>`;
@@ -243,7 +284,7 @@ export function WeatherMap() {
     });
 
     popupRef.current = popup;
-  }, [inspectorPoint, currentHour, isLoaded, metadata, precipitation, temperature, activeVariable]);
+  }, [inspectorPoint, currentHour, isLoaded, metadata, precipitation, temperature, windSpeed, windDirection, activeVariable]);
 
   return (
     <div style={{ position: 'absolute', inset: 0, background: '#0f1117' }}>

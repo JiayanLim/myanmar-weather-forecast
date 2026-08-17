@@ -4,13 +4,14 @@ export interface ForecastData {
   metadata: ForecastMetadata;
   precipitation: Float32Array;
   temperature: Float32Array;
+  windSpeed: Float32Array;
+  windDirection: Float32Array;
 }
 
 /**
  * Load forecast artifacts from the given base URL.
- * Returns metadata + flat Float32Arrays for precipitation and temperature.
- * Layout: [n_times × n_lat × n_lon] C-order (row-major).
- *
+ * All four binaries are fetched concurrently via Promise.all (ADR-022).
+ * Layout: [n_frames × n_lat × n_lon] float32 C-order (row-major).
  * Binary file names are taken from metadata.variables.*.file.
  */
 export async function loadForecast(baseUrl: string): Promise<ForecastData> {
@@ -24,9 +25,11 @@ export async function loadForecast(baseUrl: string): Promise<ForecastData> {
   const metadata: ForecastMetadata = await metaRes.json();
 
   const precipFile = metadata.variables.precipitation.file;
-  const tempFile = metadata.variables.temperature.file;
+  const tempFile   = metadata.variables.temperature.file;
+  const wsFile     = metadata.variables.wind_speed.file;
+  const wdFile     = metadata.variables.wind_direction.file;
 
-  const [precipBuf, tempBuf] = await Promise.all([
+  const [precipBuf, tempBuf, wsBuf, wdBuf] = await Promise.all([
     fetch(url(precipFile)).then((r) => {
       if (!r.ok) throw new Error(`Failed to load ${precipFile}: ${r.statusText}`);
       return r.arrayBuffer();
@@ -35,29 +38,39 @@ export async function loadForecast(baseUrl: string): Promise<ForecastData> {
       if (!r.ok) throw new Error(`Failed to load ${tempFile}: ${r.statusText}`);
       return r.arrayBuffer();
     }),
+    fetch(url(wsFile)).then((r) => {
+      if (!r.ok) throw new Error(`Failed to load ${wsFile}: ${r.statusText}`);
+      return r.arrayBuffer();
+    }),
+    fetch(url(wdFile)).then((r) => {
+      if (!r.ok) throw new Error(`Failed to load ${wdFile}: ${r.statusText}`);
+      return r.arrayBuffer();
+    }),
   ]);
 
   return {
     metadata,
-    precipitation: new Float32Array(precipBuf),
-    temperature: new Float32Array(tempBuf),
+    precipitation:  new Float32Array(precipBuf),
+    temperature:    new Float32Array(tempBuf),
+    windSpeed:      new Float32Array(wsBuf),
+    windDirection:  new Float32Array(wdBuf),
   };
 }
 
 /**
  * Extract a single [n_lat × n_lon] frame from a flat Float32Array.
- * @param data   Full array [n_times × n_lat × n_lon]
- * @param hour   Frame index (0 = init, 1..n_times-1 = forecast)
+ * @param data   Full array [n_frames × n_lat × n_lon]
+ * @param frame  Frame index (0 = init, 1..n_frames-1 = forecast)
  * @param nLat   Number of latitude points
  * @param nLon   Number of longitude points
  */
 export function getFrame(
   data: Float32Array,
-  hour: number,
+  frame: number,
   nLat: number,
   nLon: number,
 ): Float32Array {
-  const start = hour * nLat * nLon;
+  const start = frame * nLat * nLon;
   return data.subarray(start, start + nLat * nLon);
 }
 
@@ -67,14 +80,14 @@ export function getFrame(
  */
 export function getPointValue(
   data: Float32Array,
-  hour: number,
+  frame: number,
   latIdx: number,
   lonIdx: number,
   nLat: number,
   nLon: number,
 ): number {
   if (latIdx < 0 || latIdx >= nLat || lonIdx < 0 || lonIdx >= nLon) return NaN;
-  return data[hour * nLat * nLon + latIdx * nLon + lonIdx];
+  return data[frame * nLat * nLon + latIdx * nLon + lonIdx];
 }
 
 /**

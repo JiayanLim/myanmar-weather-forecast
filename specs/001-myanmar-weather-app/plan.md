@@ -1,452 +1,389 @@
 # Implementation Plan: Myanmar Weather Forecast Web Application
 
-**Branch**: `001-myanmar-weather-app` | **Date**: 2026-08-11 (v3 — 48h + temperature + M4 CPU)
+**Branch**: `001-myanmar-weather-app`
+**Date**: 2026-08-12 (v4 — new target: 7-day / 4-variable / ERA5 2021-01-01 / model TBD)
+**Revised**: 2026-08-16 (v5 — Spec Kit update phase RS; R4 timings corrected; phases added)
 **Spec**: `specs/001-myanmar-weather-app/spec.md`
 **Research**: `specs/001-myanmar-weather-app/research.md`
-**Constitution**: `.specify/memory/constitution.md` v2.0.0
+**Constitution**: `.specify/memory/constitution.md` v3.0.0
 
 ---
 
-## Summary
+## Document Purpose
 
-Build a static GitHub Pages web application visualizing 48-hour temperature and precipitation
-forecasts over Myanmar. The Earth2Studio pipeline (GraphCastSmall initialized from ARCO or IFS)
-runs locally on an Apple M4 CPU (~78s end-to-end) and produces lightweight binary artifacts
-(~16.6 KB). GraphCastSmall provides:
-- Precipitation via native `tp06` (6-hour accumulated, metres → mm/6h)
-- Temperature via native `t2m` (Kelvin → °C)
+This plan describes:
 
-No temporal interpolation, no log transform, no sic patching, no diagnostic model, no GPU
-required. The React/MapLibre frontend consumes these artifacts to render an interactive map
-with a 9-step timeline and a variable switcher.
+1. **Legacy Baseline** (completed, deployed): The GraphCastSmall/48h/2-variable/M4 CPU
+   implementation. Do NOT modify this section to mark phases as incomplete.
+
+2. **New Target Plan** (research phase, not started): A new 9-phase plan for the
+   7-day / 4-variable / ERA5 init / model-TBD architecture.
 
 ---
 
-## Architecture Decision Summary
+## PART A — LEGACY IMPLEMENTATION (v3.0, COMPLETED AND DEPLOYED)
 
-### Why GraphCastSmall?
-- 1.0° resolution — memory footprint small enough for JAX CPU on M4
-- Native `tp06` and `t2m` outputs — no diagnostic models needed
-- JAX/XLA ARM64 runs efficiently on Apple M4 CPU (~54s for 8 AR steps)
-- No sic gap to handle — GraphCastSmall inputs do not require sea ice concentration
-- Model weights freely available via Google Cloud Storage
+All phases below were completed on 2026-08-11 and the application is live on GitHub Pages.
 
-### Why ARCO for development, IFS for production?
-- Both provide all 83 GraphCastSmall input variables including tp06 and t2m
-- ARCO: historical ERA5, free GCS zarr, no credentials — ideal for local M4 inference
-- IFS: near-real-time operational, free ECMWF open data — required for current forecasts
-- NCAR_ERA5: NOT compatible (missing tp06 in lexicon)
-- GFS: NOT verified compatible — do not use
+### Phase 1: Spec Kit Update — COMPLETE (2026-08-11)
 
-### Why is precipitation mm / 6h (not mm/h)?
-- GraphCastSmall natively outputs `tp06` = total precipitation for the 6-hour forecast period
-- This is NOT an instantaneous rate; dividing by 6 would misrepresent the quantity
-- The constitution (§VI) explicitly prohibits dividing tp06 by 6
+Updated constitution, research, spec, plan, tasks for GraphCastSmall/48h/temperature.
 
-### Why 48h horizon (8 steps)?
-- 48h is the validated production configuration (GC_N_STEPS=8, GC_N_FRAMES=9)
-- 24h was the initial target; extended to 48h after confirming M4 CPU handles 8 steps in ~54s
-- 48h provides 4 extra meaningful forecast steps with minimal runtime penalty
+### Phase 2: Pipeline Rewrite — COMPLETE (2026-08-11)
 
-### What data is generated offline (M4 CPU)?
-- GraphCastSmall forecast: 9 frames (t+0h…t+48h) of tp06 and t2m over Myanmar
-- ARCO/IFS initialization data (fetched at pipeline runtime)
-- `precipitation.bin`, `temperature.bin`, `forecast.json`
+`generate_forecast.py`: GraphCastSmall + ARCO/IFS, 48h, 9 frames, tp06+t2m, M4 CPU.
+Validated: 2022-07-01T00:00:00Z init, ~78s, 2.34 GB RSS, 25/25 validation checks passed.
 
-### What runs on GitHub Pages?
-- React + TypeScript + Vite SPA (pure JavaScript/WebGL)
-- Reads pre-generated binary artifact files via `fetch()`
-- No Python, no JAX, no GPU at runtime
+### Phase 3: Demo Data Update — COMPLETE (2026-08-11)
 
----
+`generate_demo_data.py`: 9 frames, both variables, schema v3.0, is_demo=true.
 
-## Technical Context
+### Phase 4: Frontend Migration (24h → 48h + Temperature) — COMPLETE (2026-08-11)
 
-**Language/Version**:
-- Python 3.11+ (pipeline) — uv-managed
-- TypeScript 5.4+ (frontend)
-- Node.js 22.x
+Variable switcher, variable-aware map, legend, info panel, timeline, header.
+VariableSwitcher.tsx fixed for Zustand 5 / React #185 (commit 5041b07, 2026-08-12).
 
-**Primary Dependencies**:
-- Pipeline: `earth2studio[aurora,data]>=0.17.0`, `xarray>=2024.1.0,<2026`, `numpy>=1.26.0`,
-  `zarr>=2.17.0`, `psutil>=5.9.0`
-- Pipeline JAX deps: `graphcast` (git@08cf736), `dm-haiku>=0.0.14`, `dm-tree>=0.1.9`,
-  `flax>=0.10.6`
-- Frontend: `react@18`, `typescript@5`, `vite@5`, `maplibre-gl@4`, `tailwindcss@3`, `zustand`
+### Phase 5: Validation Script Update — COMPLETE (2026-08-11)
 
-**xarray pin**: `xarray<2026` required — `xr.Dataset(existing_dataset)` was removed in
-xarray 2026+. Earth2Studio 0.17.0's `_chunked_prediction_generator` uses this pattern.
+`validate_forecast.py`: schema v3.0, 9 frames, both variables, 25 checks.
 
-**Storage**: Static files only. Binary artifacts in `data/forecast/` (production, tracked)
-or `data/demo/` (development, committed).
+### Phase 6: Local M4 Pipeline Notebook — COMPLETE (2026-08-11)
 
-**Performance Goals**:
-- Initial load < 5 seconds on ≥25 Mbps
-- Frame transition < 200ms after data loaded
-- Total payload ~16.6 KB (no lazy loading required at this scale)
+`notebooks/graphcast_myanmar_forecast.ipynb`: documents local M4 inference end-to-end.
 
-**Constraints**:
-- No runtime server
-- No interpolation of forecast variables (6h native steps only)
-- No log/exp transform on tp06 or t2m
-- ARCO or IFS only (not NCAR_ERA5, not GFS)
-- JAX CPU backend on M4 (not MPS — MPS incompatible with JAX float64 ops)
+### Phase 7: Integration Testing — COMPLETE (2026-08-11/12)
+
+T040, T041, T044 complete. React #185 fixed. Live on GitHub Pages with is_demo=false.
+
+### Phase 8: README Update — COMPLETE (2026-08-11)
+
+README updated for GraphCastSmall/48h/M4.
 
 ---
 
-## Constitution Check
+## PART B — NEW TARGET PLAN (v4.0 — 2026-08-17)
 
-| §I Static-First | No runtime compute; all data pre-generated | ✓ |
-| §II Earth2Studio-Mandatory | GraphCastSmall + ARCO/IFS | ✓ |
-| §III Pipeline | `scripts/` standalone; 6h steps; 48h horizon; t-6h+t+0h init | ✓ |
-| §IV Myanmar-Focused | numpy bbox subset; GeoJSON boundary layer | ✓ |
-| §V Map-First UX | MapLibre full-viewport; controls subordinate | ✓ |
-| §VI Native-Step Navigation | 6h native steps; no interpolation; tp06 not divided | ✓ |
-| §VII Model-Agnostic | All config in forecast.json; no GraphCast strings in TS | ✓ |
-| §VIII Performance | Float32 binary ~16.6KB total; all frames loaded at once | ✓ |
-| §IX Climate-Honest | Header + InfoPanel + tp06 tooltip mandatory | ✓ |
-| §X Minimal Scope | pipeline → static → GitHub Pages; no extras | ✓ |
-| §XI Hardware Transparency | M4 CPU validated; RSS recorded in forecast.json | ✓ |
-| §XII Resolution Honesty | 1.0° native disclosed; interpolation policy stated | ✓ |
+**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5 COMPLETE. R6 COMPLETE (2026-08-17). Phase R4b pending (demo data). Phase 9 NOT STARTED.
+
+**Model**: GraphCastOperational (0.25°, JAX/Haiku, ARCO/ERA5 init)
+**R3 result**: PASS — M4 24 GB, peak RSS 1.99 GB post-compile, JIT cold ~27–34 min
+**R4 performance (actual)**: 18.7h total; 25–34 min/step post-JIT; step 10 anomaly ~80 min (thermal)
+**R5 result**: PASS — exit 0; verification.json v2.0 written; ADR-023 closed.
+**Model selection gate**: PASSED — GraphCastOperational approved by user (ADR-012/018).
 
 ---
 
-## Project Structure
+### Phase 1: Model and Data Research — COMPLETE (2026-08-12)
 
-```text
-myanmar-weather/
-│
-├── .github/
-│   └── workflows/
-│       └── deploy-pages.yml         # 3-file check: real forecast preferred, demo fallback
-│
-├── .specify/                        # Spec Kit (constitution.md v2.0.0)
-│
-├── specs/
-│   └── 001-myanmar-weather-app/
-│       ├── research.md
-│       ├── spec.md
-│       ├── plan.md
-│       └── tasks.md
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Header.tsx           # App title, model info, init time, staleness
-│   │   │   ├── Legend.tsx           # Variable-aware: mm/6h or °C color scale
-│   │   │   ├── Timeline.tsx         # 9-step slider (0h–48h); prev/next; play/pause; speed
-│   │   │   ├── InfoPanel.tsx        # About/attribution + both variable semantics
-│   │   │   ├── DemoBanner.tsx       # "DEMO DATA" banner when is_demo=true
-│   │   │   └── VariableSwitcher.tsx # Precip / Temp toggle buttons
-│   │   ├── map/
-│   │   │   ├── WeatherMap.tsx       # MapLibre GL JS container; variable-aware rendering
-│   │   │   └── colorscales.ts       # PRECIP_LUT_ALPHA + TEMP_LUT; LUT-based rendering
-│   │   ├── data/
-│   │   │   ├── ForecastLoader.ts    # Fetch + parse both binary artifacts (Promise.all)
-│   │   │   ├── ForecastStore.ts     # Zustand store; temperature + precipitation + activeVariable
-│   │   │   └── types.ts             # TypeScript types; ActiveVariable = 'precipitation' | 'temperature'
-│   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   └── index.css
-│   ├── public/
-│   │   ├── data/                    # Served data (copied at build time)
-│   │   │   ├── forecast.json
-│   │   │   ├── precipitation.bin
-│   │   │   └── temperature.bin
-│   │   └── geo/
-│   │       └── myanmar-boundary.geojson
-│   ├── index.html
-│   ├── vite.config.ts
-│   ├── tailwind.config.ts
-│   ├── tsconfig.json
-│   └── package.json
-│
-├── scripts/
-│   ├── generate_forecast.py         # Main pipeline (M4 CPU, ~78s)
-│   ├── generate_demo_data.py        # Demo pipeline (CPU only, 9 frames, synthetic)
-│   └── validate_forecast.py        # Artifact validation (schema v3.0, 25 checks)
-│
-├── notebooks/
-│   └── graphcast_myanmar_forecast.ipynb  # Local M4 pipeline documentation notebook
-│
-├── data/
-│   ├── demo/                        # Committed demo artifacts (is_demo=true)
-│   │   ├── forecast.json
-│   │   ├── precipitation.bin        # [9 × 21 × 11] float32 synthetic
-│   │   └── temperature.bin          # [9 × 21 × 11] float32 synthetic
-│   └── forecast/                    # Production artifacts (tracked, is_demo=false)
-│       ├── forecast.json            # schema v3.0; init 2022-07-01T00:00:00Z
-│       ├── precipitation.bin        # [9 × 21 × 11] float32; range [0, 17.38] mm/6h
-│       └── temperature.bin          # [9 × 21 × 11] float32; range [1.94, 35.35] °C
-│
-├── README.md
-├── pyproject.toml
-└── .gitignore
-```
+**Objective**: Select the Earth2Studio model for the 7-day / 4-variable / ERA5 2021-01-01
+forecast. Produce ADR-012 (see research.md) with a fully documented model selection.
+
+**Inputs**:
+- Earth2Studio model registry: `earth2studio.models.px.*`
+- Earth2Studio documentation and source code
+- Research.md ADR-008 through ADR-016
+
+**Tasks**:
+- Enumerate all models in `earth2studio.models.px` and `earth2studio.models.dx`
+- For each candidate: inspect `input_coords`, `output_coords`, supported variables
+- Verify presence of: precipitation variable, u-wind, v-wind, temperature
+- Document native timestep, native resolution, initialization requirements for each
+- Verify ARCO compatibility (can ARCO provide all required init variables for 2021-01-01?)
+- Document compute requirements (RAM, VRAM) for each candidate
+- Evaluate 7-day forecast skill (academic literature, Earth2Studio model cards)
+- Produce a model comparison table
+- Select one model with documented rationale
+- Obtain explicit user approval of model selection
+
+**Gate**: Model selected, documented in research.md ADR-012 (Updated), approved.
+
+**Deliverables**:
+- Updated ADR-012 in research.md with "Selected model" filled in
+- Model variable specification table (input variables, output variables, units)
+- Hardware feasibility assessment
+
+**Do NOT modify any application code during Phase 1.**
 
 ---
 
-## Forecast Artifact Format (Schema v3.0)
+### Phase 2: ERA5 Data Availability and Initialization Validation — COMPLETE (2026-08-12)
 
-### forecast.json (authoritative schema)
+**Prerequisite**: Phase 1 gate passed (model selected).
 
-```json
-{
-  "schema_version": "3.0",
-  "model": "GraphCastSmall",
-  "model_version": "1.0",
-  "model_checkpoint": "GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
-  "initialization_source": "ARCO",
-  "initialization_time": "2022-07-01T00:00:00Z",
-  "forecast_generated_at": "2026-08-11T13:09:42Z",
-  "forecast_horizon_hours": 48,
-  "native_timestep_hours": 6,
-  "n_times": 9,
-  "spatial_resolution_deg": 1.0,
-  "display_resolution_deg": null,
-  "region": "Myanmar",
-  "bbox": { "lat_min": 9.0, "lat_max": 29.0, "lon_min": 92.0, "lon_max": 102.0 },
-  "grid": { "n_lat": 21, "n_lon": 11 },
-  "lat": [9.0, 10.0, "...", 29.0],
-  "lon": [92.0, 93.0, "...", 102.0],
-  "times_utc": ["2022-07-01T00:00:00Z", "...", "2022-07-03T00:00:00Z"],
-  "variables": {
-    "precipitation": {
-      "file": "precipitation.bin",
-      "units": "mm / 6h",
-      "source_variable": "tp06",
-      "transformation_provenance": { "log_transform_applied": false, "exp_transform_applied": false, ... }
-    },
-    "temperature": {
-      "file": "temperature.bin",
-      "units": "°C",
-      "source_variable": "t2m",
-      "transformation_provenance": { "conversion": "K - 273.15", "log_transform_applied": false, ... }
-    }
-  },
-  "is_demo": false,
-  "inference_config": {
-    "device": "Apple M4 CPU",
-    "jax_backend": "cpu",
-    "rss_peak_gb": 2.34,
-    "inference_time_seconds": 54,
-    "total_pipeline_time_seconds": 78
-  }
-}
-```
+**Objective**: Verify that ERA5 via ARCO provides all required input variables for
+the selected model at 2021-01-01T00:00:00Z (and any required preceding timesteps).
 
-### Binary Format (per variable)
+**Tasks**:
+- Write a short script to fetch required init variables from ARCO for 2021-01-01
+- Confirm all model input_coords variables are available and non-NaN
+- If multi-step init required (e.g., t−6h AND t+0h), verify all required timesteps
+- Document any missing or problematic variables
+- If ARCO cannot provide required variables: report to user and reassess
 
-```
-Layout:   [n_times × n_lat × n_lon] = [9 × 21 × 11]
-Dtype:    float32, little-endian, C-order (row-major)
-Size:     9 × 21 × 11 × 4 bytes = 8,316 bytes ≈ 8.1 KB each
-Encoding: No NaN (fill_value = null for both variables)
-Reading:  new Float32Array(await response.arrayBuffer())
-Indexing: value[t][lat_i][lon_i] = array[t * 21 * 11 + lat_i * 11 + lon_i]
-```
+**Gate**: Confirmed that ARCO can provide a complete, valid initialization for
+the selected model at 2021-01-01T00:00:00Z.
+
+**Deliverables**:
+- Short validation script or notebook output confirming data availability
+- List of confirmed available variables
+
+**Do NOT run full inference until Phase 3.**
 
 ---
 
-## Pipeline Architecture
+### Phase 3: Minimal Model Inference / Hardware Feasibility — COMPLETE / PASS (2026-08-12)
 
-### generate_forecast.py (key logic)
+**Prerequisite**: Phase 2 gate passed (data availability confirmed).
 
-```python
-# Force JAX CPU — MUST be before any JAX import
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+**Objective**: Run a 1-step (smoke test) inference to confirm the selected model
+runs on available hardware without OOM or assertion errors.
 
-# Constants
-GC_STEP_HOURS   = 6
-GC_HORIZON_HOURS = 48
-GC_N_STEPS      = 8   # 8 AR steps
-GC_N_FRAMES     = 9   # 9 frames (t+0h through t+48h)
-GC_N_LAT, GC_N_LON = 21, 11
+**Result**: PASS — ADR-018 in research.md.
 
-# [1/4] Data source
-data = ARCO()  # or IFS()
+| Measurement | Value |
+|---|---|
+| Model | GraphCastOperational (0.25°, 721×1440) |
+| Hardware | Apple M4 MacBook Air 24 GB |
+| JAX backend | cpu (XLA ARM64) |
+| nsteps=1 time | 2081s = 34.7 min (JIT dominates on cold start) |
+| Peak RSS (compilation) | ~5.0 GB |
+| RSS post-inference | 1.99 GB |
+| OOM / crash | None |
+| tp06 in output | ✓ metres/6h, max 0.0872 m = 14.5 mm/hr |
+| t2m in output | ✓ Kelvin, 221–316 K → -52 to +43°C |
+| u10m in output | ✓ m/s |
+| v10m in output | ✓ m/s |
 
-# [2/4] Load model (~5 GB weights from GCS)
-package = GraphCastSmall.load_default_package()
-model = GraphCastSmall.load_model(package)
+**R4 measured per-step timing (2026-08-16, 29-step run)**:
+- Step 2 (JIT + 1st forward): 27:14 total elapsed
+- Steps 3–9 (post-JIT): 24–26 min each (stable; ~25 min mean)
+- Estimated 7-day total: ~27 min JIT + 28 × 25 min ≈ **12–14 hours**
+- Note: First aborted run (2026-08-13) showed 35–48 min/step — attributed to thermal
+  throttling or background load. Current run on a quieter machine is significantly faster.
 
-# [3/4] Inference (~54s on M4 CPU for 8 steps)
-with torch.inference_mode():
-    io = e2run.deterministic(
-        time=[init_time], nsteps=GC_N_STEPS,
-        prognostic=model, data=data, io=ZarrBackend(),
-        device=torch.device("cpu"), verbose=True,
-    )
+**Gate**: PASSED. R4 approved by user.
 
-# [4/4] Post-process
-tp06_raw = io.root["tp06"][0]  # (9, 181, 360)
-t2m_raw  = io.root["t2m"][0]   # (9, 181, 360)
-
-# lat ascending sort; Myanmar subset [9, 21, 11]
-lat_idx_asc = ...  # np.argsort on matched lat indices
-tp06_myanmar = tp06_raw[:, lat_idx_asc, :][:, :, lon_idx]
-t2m_myanmar  = t2m_raw[:,  lat_idx_asc, :][:, :, lon_idx]
-
-# Unit conversions
-tp06_mm = np.maximum(tp06_myanmar * 1000.0, 0.0).astype(np.float32)
-tp06_mm[0] = 0.0   # t+0h: no forecast accumulation
-t2m_c   = (t2m_myanmar - 273.15).astype(np.float32)
-
-# Write artifacts
-temperature.bin   ← t2m_c (float32 C-order)
-precipitation.bin ← tp06_mm (float32 C-order)
-forecast.json     ← schema v3.0
-```
-
-### Unit Conversion Summary
-
-| Variable | Raw source | Operation | Output |
-|----------|-----------|-----------|--------|
-| tp06 | metres (physical) | × 1000, clamp ≥ 0, t+0h=0 | mm / 6h |
-| t2m | Kelvin | − 273.15 | °C |
-
-**No log/exp transform is applied to either variable.**
+**Deliverables**:
+- ADR-018 in research.md (full hardware feasibility results)
+- Variable specification confirmed: tp06 (metres/6h), t2m (K), u10m/v10m (m/s)
 
 ---
 
-## Frontend Architecture
+### Phase RS: Spec Kit Update — IN PROGRESS (2026-08-16)
 
-### State (Zustand ForecastStore)
+**Prerequisite**: R3 PASS; R4 pipeline running; user approves planning output.
 
-```typescript
-interface ForecastState {
-  metadata: ForecastMetadata | null;
-  precipitation: Float32Array | null;  // [9 × 21 × 11]
-  temperature: Float32Array | null;    // [9 × 21 × 11]
-  activeVariable: 'precipitation' | 'temperature';
-  isLoaded: boolean;
-  error: string | null;
-  maskError: string | null;
+**Objective**: Update all Spec Kit files to reflect confirmed GCOp architecture.
+Lock schema v4.0, ADR-019–022. No application code modified.
 
-  currentHour: number;      // index 0–8 into times_utc array
-  isPlaying: boolean;
-  playbackSpeed: 0.5 | 1 | 2 | 4;
+**Tasks**: RS01–RS05 (see tasks.md)
 
-  setData: (metadata, precipitation, temperature) => void;
-  setVariable: (v: ActiveVariable) => void;
-  setHour: (h: number) => void;
-  // ... stepForward, stepBackward, togglePlay, setSpeed
-}
-```
-
-### Map Rendering
-
-Frame update cycle (target < 200ms):
-1. User changes step or variable → store update
-2. `WeatherMap` detects change (Zustand selector)
-3. `getFrame(h)` → `Float32Array` slice [21 × 11] from active variable
-4. Apply LUT: `Float32Array` → `Uint8ClampedArray` [21 × 11 × 4] (RGBA)
-5. Bilinear interpolation (1.0° → 0.05°) for visual smoothness
-6. Update MapLibre canvas source
-
-### Color Scales
-
-```typescript
-// Precipitation: 0–100+ mm/6h with alpha fade near zero
-PRECIP_MIN = 0, PRECIP_MAX = 100
-PRECIP_LUT_ALPHA: Uint8ClampedArray  // 256 RGBA entries
-
-// Temperature: 15–40°C (Myanmar tropics), viridis-like
-TEMP_MIN = 15, TEMP_MAX = 40
-TEMP_LUT: Uint8ClampedArray  // 256 RGBA entries, full opacity
-```
-
-### Timeline Component
-
-The slider operates on step index (0–8). Lead time is derived from step × native_timestep_hours.
-
-```typescript
-// Dynamic hour markers: 0h · 12h · 24h · 36h · 48h (every other frame at 6h steps)
-const markers = Array.from({ length: n_times }, (_, i) => i).filter(i => i % 2 === 0);
-const leadHours = currentHour * (metadata?.native_timestep_hours ?? 6);
-```
+**Gate**: All five Spec Kit files updated and reviewed by user.
 
 ---
 
-## GitHub Actions Deployment
+### Phase 4: 7-Day Four-Variable Forecast Pipeline — COMPLETE (2026-08-17)
 
-```yaml
-# .github/workflows/deploy-pages.yml — current production state
-- name: Copy forecast data into dist
-  run: |
-    mkdir -p frontend/dist/data
-    if [ -f data/forecast/forecast.json ] && \
-       [ -f data/forecast/temperature.bin ] && \
-       [ -f data/forecast/precipitation.bin ]; then
-      echo "Using real forecast data from data/forecast/"
-      cp data/forecast/forecast.json frontend/dist/data/
-      cp data/forecast/temperature.bin frontend/dist/data/
-      cp data/forecast/precipitation.bin frontend/dist/data/
-    else
-      echo "No real forecast found — using demo data from data/demo/"
-      cp data/demo/forecast.json frontend/dist/data/
-      cp data/demo/temperature.bin frontend/dist/data/
-      cp data/demo/precipitation.bin frontend/dist/data/
-    fi
-```
+**Prerequisite**: Phase 3 gate passed (smoke test succeeded). Phase RS approved.
 
-Logic: All 3 artifacts must exist for real forecast to be used. Missing any one → demo fallback.
+**Objective**: Produce validated 7-day GCOp forecast artifacts in data/forecast_v4/.
 
----
+**Result**: PASS
 
-## Technology Decisions
+- Pipeline: 12:33 SGT 2026-08-16 → 07:15 SGT 2026-08-17 (~18.7h total; caffeinate active)
+- Final step timing: JIT 27 min (step 2); steps 3–29: 25–34 min/step; step 10 anomaly ~80 min
+- Total peak RSS: 3.13 GB (during 28-step run); post-inference: 2.06 GB (per forecast.json)
+- JAX cache: configured but remained empty (warm-start not achieved; cold JIT on every run)
 
-| Decision | Choice | Rejected | Reason |
-|----------|--------|---------|--------|
-| Precipitation source | GraphCastSmall native tp06 | PrecipitationAFNO | tp06 is first-class; no diagnostic model needed |
-| Temperature source | GraphCastSmall native t2m | External reanalysis | t2m is first-class output; same inference pass |
-| Temporal resolution | Native 6h from GraphCastSmall | Linear interpolation | Constitution §VI prohibits interpolation |
-| Initialization source | ARCO (dev) / IFS (prod) | GFS, NCAR_ERA5 | NCAR_ERA5 missing tp06; GFS unverified |
-| Precipitation transform | × 1000 only | exp() × 1000 | tp06 already in physical metres; no log space |
-| Temperature transform | K − 273.15 only | No scaling | t2m already in Kelvin; straightforward conversion |
-| Precipitation units | mm / 6h | mm/h | tp06 is genuinely 6-hourly; dividing misrepresents |
-| Variables displayed | Precipitation + Temperature | Precipitation only | Both are native GraphCastSmall outputs; marginal cost |
-| Frontend state | Zustand | Redux, React Context | Minimal API; sufficient scope |
-| Data format | Float32 binary (one file per variable) | JSON, NetCDF | Smallest payload; native ArrayBuffer |
-| Inference hardware | JAX CPU / M4 (~78s) | CUDA GPU (T4 16 GB) | T4 failed for Aurora1p5; GraphCastSmall runs on M4 CPU |
-| Schema | v3.0 | v2.0 (precipitation only) | Temperature requires second binary; new schema version |
+**R044 validation**: PASS — 0 errors, all 4 variables at 385,236 bytes each
+
+| Stat | Value |
+|---|---|
+| Precipitation (mm/hr) | min=0.000, median=0.0003, P95=0.084, max=1.620 |
+| Temperature (°C) | min=−26.88, median=21.30, P95=27.92, max=33.18 |
+| Wind Speed (kt) | min=0.005, median=3.10, P95=12.72, max=24.20 |
+| Wind Direction (°FROM) | min=0.003, median=83.40, P95=339.53, max=359.99 |
+
+**RS10**: generate_forecast.py corrected to emit `schema_version: "4.0"` (was "5.0").
+
+**Gate**: PASSED — data/forecast_v4/ validated; RS10 complete.
+
+**Deliverables**:
+- `data/forecast_v4/` — 4 binaries × 385,236 bytes + forecast.json (8,063 bytes); is_demo=false
+- `scripts/generate_forecast.py` — corrected to emit schema v4.0
+- `scripts/validate_forecast.py` — schema v4.0/v5.0, 4 variables, 29 frames
+- `data/demo/` — regeneration pending (Phase R4b, tasks RS11–RS14, not yet started)
 
 ---
 
-## Risk Register
+### Phase 5: ERA5 Evaluation Pipeline — COMPLETE (2026-08-17)
+
+**Prerequisite**: Phase 4 gate passed (7-day forecast produced and validated).
+
+**Objective**: Compare the 2021-01-01 7-day forecast against ERA5 analysis.
+
+**Result**: PASS — exit 0; verification.json schema v2.0 written.
+
+**ARCO investigation (pre-implementation, 2026-08-16)**:
+- Confirmed ERA5 `total_precipitation` = 1-hour accumulation ending at each timestamp
+- Not cumulative; no seam handling at 00Z/12Z; each hourly value independent
+- 11.73% negative values in dry season (spectral artifacts, clamped to 0)
+- Grid alignment: 0.25° exact match — lat_err=0°, lon_err=0° (no interpolation needed)
+- Results locked in ADR-023
+
+**R5 Verification Results — 2021-01-01 GCOp vs ERA5**:
+
+| Variable | MAE | RMSE | Bias |
+|---|---|---|---|
+| Temperature (29 frames) | 1.3137°C | 1.6975°C | −0.7595°C |
+| Wind speed (29 frames) | 1.0548 kt | 1.4027 kt | −0.3911 kt |
+| Wind direction (29 frames) | 16.9113° circ. MAE | — | — |
+| Precipitation (28 frames) | 0.0172 mm/hr | 0.0645 | +0.0110 |
+
+Precipitation categorical (0.1 mm/hr threshold; totals from 28 frames × 3,321 points):
+POD=0.6343 FAR=0.7279 CSI=0.2352 (1,148 hits / 662 misses / 3,071 false alarms)
+
+**Gate**: PASSED — all checks pass; caveats documented in ADR-023 and verification.json.
+
+**Deliverables**:
+- `scripts/verify_forecast.py` — fully rewritten for GCOp, 4 variables, schema v2.0
+- `data/verification/verification.json` — schema v2.0, 31,482 bytes
+
+---
+
+### Phase 6: Schema v4.0 Full Frontend Migration — COMPLETE (2026-08-17)
+
+**Prerequisite**: Phase 4 gate passed; Phase RS complete.
+
+**Objective**: Migrate all frontend layers (types, loading, store, rendering, UI) to schema v4.0.
+Phases 6, 7, and 8 were completed in a single unified R6 authorization on 2026-08-17.
+
+**Files changed**:
+- `frontend/src/data/types.ts`: schema v4.0; 4-variable ActiveVariable; n_frames; native_resolution_deg
+- `frontend/src/data/ForecastLoader.ts`: 4-binary Promise.all (ADR-022)
+- `frontend/src/data/ForecastStore.ts`: windSpeed + windDirection arrays; n_frames fallbacks
+- `frontend/src/App.tsx`: setData passes all 4 arrays
+- `frontend/src/map/colorscales.ts`: MODEL_STEP removed (ADR-019); renderWithInterpolation(modelStep);
+  WIND_LUT_ALPHA; renderWindDirectionWithInterpolation (vector-component bilinear, ADR-020)
+- `frontend/src/map/WeatherMap.tsx`: all 4 variables; modelStep=metadata.native_resolution_deg; popup
+- `frontend/src/components/VariableSwitcher.tsx`: 4 buttons
+- `frontend/src/components/Legend.tsx`: precipitation mm/hr (0–10); wind speed kt (0–30); wind dir hue
+- `frontend/src/components/InfoPanel.tsx`: display_unit/conversion field names; 4 variables
+- `frontend/src/components/Header.tsx`: native_resolution_deg; optional model_version
+- `frontend/src/components/Timeline.tsx`: n_frames
+- `frontend/src/components/ModelEvaluation.tsx`: schema v2.0; all 4 variables; GCOp label
+- `frontend/public/data/`: 5 v4 forecast files + verification.json for dev mode
+
+**Validation results**:
+- `npx tsc --noEmit` → 0 errors
+- `npm run build` → ✓ 1.50s
+- All 4 binaries: 385,236 bytes each ✓
+- No MODEL_STEP=1.0 hardcoded; no n_times; no spatial_resolution_deg in active layer
+- No raw wind-direction degree interpolation
+
+**Gate**: PASSED — TypeScript 0 errors; build passes; all 4 variables integrated.
+
+---
+
+### Phase 7: Frontend Four-Variable Migration — COMPLETE (merged into Phase 6, 2026-08-17)
+
+See Phase 6.
+
+---
+
+### Phase 8: Evaluation / Accuracy UI — COMPLETE (merged into Phase 6, 2026-08-17)
+
+See Phase 6. ModelEvaluation.tsx rewritten for verification.json schema v2.0.
+
+---
+
+### Phase 8: Evaluation / Accuracy UI — FUTURE (NOT STARTED)
+
+**Prerequisite**: Phase 5 (verification.json) and Phase 7 (frontend migration) complete.
+
+**Objective**: Implement the Model Evaluation popup in the frontend.
+
+**Tasks**:
+- ModelEvaluation.tsx: fetches verification.json; displays 4-variable skill tables
+- Section header: "Historical Model Evaluation" (NOT "this forecast's accuracy")
+- Tables: temperature MAE/RMSE/Bias; precipitation MAE/RMSE/Bias/POD/FAR/CSI;
+  wind speed MAE/RMSE; wind direction circular MAE
+- Caveats prominently displayed
+- Button in Header to open popup
+- Graceful fallback if verification.json is absent
+
+**Gate**: TypeScript 0 errors; popup renders correctly; caveats clearly visible.
+
+---
+
+### Phase 9: Deployment — NOT STARTED
+
+**Prerequisite**: All phases 1–8 complete; user gives explicit approval to push.
+
+**Objective**: Deploy the new 7-day / 4-variable forecast to GitHub Pages.
+
+**Tasks**:
+- Update `.github/workflows/deploy-pages.yml` for schema v4.0 (4 artifact files)
+- Commit all Spec Kit updates, pipeline scripts, and demo data
+- Run validate_forecast.py on all artifacts
+- TypeScript check and production build
+- Push to main
+- Monitor GitHub Actions
+- Verify live GitHub Pages: model, init time, 4 variables, 7-day timeline
+- Confirm is_demo=false on production
+
+**Gate**: Live site shows correct model, 2021-01-01 init, 7-day timeline, 4 variables, no errors.
+
+---
+
+## Architecture Decision Summary (New Target)
+
+### Why ERA5 via ARCO for 2021-01-01?
+
+- ARCO covers 1959–2023; 2021-01-01 is within range (no IFS needed)
+- No credentials required
+- Provides historical atmospheric state for initialization
+- 2021 ERA5 is also available for evaluation against the forecast
+
+### Why 2021-01-01 as initialization date?
+
+- Falls within ARCO coverage
+- Post-2020 makes it a quasi out-of-sample test for models trained on ERA5 ≤2019/2020
+- ERA5 for 2021 is fully processed and available for evaluation
+
+### What is the role of "ERA5 1990–2020 historical data"?
+
+ERA5 1990–2020 is the historical reanalysis available prior to 2021-01-01.
+The project uses ARCO to fetch the atmospheric state at 2021-01-01T00:00:00Z
+(and preceding timesteps if required by the model) as the forecast initialization.
+This is initialization, NOT training.
+The foundation model's weights were pre-trained on ERA5 by the model's original authors.
+This project does NOT perform training or fine-tuning.
+
+### Constitution Check (New Target Plan)
+
+| §I Static-First | No runtime compute; static GitHub Pages | ✓ Preserved |
+| §II Earth2Studio-Mandatory | Earth2Studio model (TBD); ARCO/ERA5 init | Pending model selection |
+| §III Pipeline | 7-day, 4 variables, model-native steps | Pending Phase 4 |
+| §IV Myanmar-Focused | Myanmar bbox subset | Preserved |
+| §V Map-First UX | 4-variable map | Pending Phase 7 |
+| §VI Native-Step Navigation | Model-native timestep; no interpolation | Pending model selection |
+| §VII Model-Agnostic Frontend | All config from forecast.json | Preserved |
+| §VIII Performance | Payload TBD | Pending model resolution |
+| §IX Climate-Honest | 4-variable disclosures; ERA5 init disclosure | Pending Phase 7 |
+| §XI Hardware Transparency | Smoke test first; hardware recorded | Pending Phase 3 |
+| §XII Resolution Honesty | Native resolution documented and disclosed | Pending model selection |
+
+---
+
+## Risk Register (New Target)
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|-----------|
-| ARCO data unavailable for recent dates | Low | Low | Fall back to IFS for recent dates |
-| tp06 negative values | Low | Low | Clamp to 0 in pipeline (physical constraint) |
-| GraphCastSmall weights download fails | Low | Medium | Retry; weights cached after first download |
-| MapLibre canvas source API change | Low | Low | Pin MapLibre version; isolated in WeatherMap.tsx |
-| xarray 2026+ incompatibility | Medium | High | Pinned xarray<2026 in pyproject.toml |
-| IFS open data latency | Low | Low | Auto-detect latest available run with 6h lag |
-
----
-
-## Development Phases — Status
-
-**Phase 1**: Spec Kit update — COMPLETE (2026-08-11)
-
-**Phase 2**: Pipeline rewrite — COMPLETE (2026-08-11)
-- generate_forecast.py: GraphCastSmall + ARCO/IFS, 48h, 9 frames, temp+precip, M4 CPU
-
-**Phase 3**: Demo data update — COMPLETE (2026-08-11)
-- generate_demo_data.py: 9 frames, both variables, schema v3.0, is_demo=true
-
-**Phase 4**: Frontend migration (24h → 48h + temperature) — COMPLETE (2026-08-11)
-- VariableSwitcher, variable-aware map, legend, popup, timeline, header
-
-**Phase 5**: Validation script update — COMPLETE (2026-08-11)
-- validate_forecast.py: schema v3.0, 9 frames, both variables, 25 checks
-
-**Phase 6**: Local M4 pipeline notebook — COMPLETE (2026-08-11)
-- graphcast_myanmar_forecast.ipynb: documents local M4 inference end-to-end
-
-**Phase 7**: Integration testing — IN PROGRESS
-- T040, T041: PASS; T042 (frame profiling): pending; T043 (GitHub Pages): pending
-
-**Phase 8**: README update — COMPLETE (2026-08-11)
+| Selected model OOM on available hardware | Medium | High | Phase 3 smoke test; fallback to lower-resolution model |
+| ARCO missing required init variables | Low | High | Phase 2 data availability check before any inference |
+| Precipitation semantics differ from GraphCastSmall | Medium | Medium | Inspect output_coords in Phase 1; document per model |
+| Wind variable not at 10m level | Medium | Medium | Inspect output_coords; use nearest available level |
+| 7-day skill insufficient for display | Low | Medium | Document skill in Phase 5; add disclaimer in UI |
+| Schema v4.0 breaks legacy frontend | Low | High | Demo data and legacy data kept separate; schema checked at load |
+| Model selection takes longer than expected | Low | Medium | Research phase has no time constraint; gate enforced |

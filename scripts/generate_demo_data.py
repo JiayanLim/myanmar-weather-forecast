@@ -1,7 +1,7 @@
 """
 generate_demo_data.py — Generate deterministic demo forecast artifacts (no GPU required).
 
-Produces the same schema as GraphCastSmall production forecasts (schema v3.0).
+Produces the same schema as GraphCastSmall production forecasts (schema v4.0).
 Used for:
   - Frontend development without a GPU
   - CI/CD pipeline on GitHub Actions
@@ -35,7 +35,7 @@ MYANMAR_LAT_MIN, MYANMAR_LAT_MAX = 9.0, 29.0
 MYANMAR_LON_MIN, MYANMAR_LON_MAX = 92.0, 102.0
 N_LAT = 21          # 9°N to 29°N at 1.0° spacing
 N_LON = 11          # 92°E to 102°E at 1.0° spacing
-N_FRAMES = 9        # t+0h through t+48h at 6h steps
+N_FRAMES = 29       # t+0h through t+168h at 6h steps (28 AR steps + init)
 STEP_HOURS = 6      # Native GraphCastSmall timestep
 
 # Fixed init time for reproducibility
@@ -73,8 +73,15 @@ def generate_precipitation(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
         (17.0,  94.5,  35.0, 1.2),  # Ayeyarwady delta
     ]
 
-    # Frame scales: t+0h always 0; t+6h through t+48h peak and decay
-    frame_scales = [0.0, 0.5, 1.0, 0.9, 0.8, 0.6, 0.4, 0.3, 0.2]
+    # Frame scales: t+0h always 0; t+6h through t+168h build, peak, and decay
+    # 29 entries: index 0 = t+0h (init, always 0), indices 1-28 = t+6h through t+168h
+    frame_scales = [
+        0.0,                                   # t+0h: init, no accumulation
+        0.3, 0.6, 1.0, 0.9, 0.8, 0.7, 0.6,   # t+6h–t+42h: build and peak (day 1)
+        0.5, 0.7, 0.9, 1.0, 0.8, 0.7, 0.5,   # t+48h–t+84h: second peak (day 2-3)
+        0.4, 0.5, 0.6, 0.7, 0.5, 0.4, 0.3,   # t+90h–t+126h: weakening (day 4-5)
+        0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1,   # t+132h–t+168h: dissipating (day 6-7)
+    ]
 
     for frame_idx in range(N_FRAMES):
         if frame_scales[frame_idx] == 0.0:
@@ -119,9 +126,10 @@ def generate_temperature(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
 
     temp = np.zeros((N_FRAMES, N_LAT, N_LON), dtype=np.float32)
 
-    # Diurnal pattern for each 6h frame
-    # Frame 0 = 00Z, 1 = 06Z (morning), 2 = 12Z (hot), 3 = 18Z (cooling), ...
-    diurnal_offsets = [0.0, 2.0, 5.0, 2.0, -1.0, -3.0, -2.0, 1.0, 3.0]
+    # Diurnal pattern for each 6h frame — repeating 24h cycle (4 steps per day)
+    # Frame 0 = 00Z, 1 = 06Z (warm), 2 = 12Z (hottest), 3 = 18Z (cooling), repeat
+    base_diurnal = [0.0, 2.0, 5.0, 2.0]
+    diurnal_offsets = [base_diurnal[i % 4] for i in range(N_FRAMES)]
 
     for frame_idx in range(N_FRAMES):
         offset = diurnal_offsets[frame_idx]
@@ -148,7 +156,7 @@ def write_forecast_json(
     ]
 
     meta = {
-        "schema_version": "3.0",
+        "schema_version": "4.0",
         "model": "GraphCastSmall",
         "model_version": "1.0",
         "model_checkpoint": (
@@ -266,12 +274,12 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Generating demo forecast artifacts → {output_dir.resolve()}")
-    print(f"Schema : v3.0 (GraphCastSmall 48h, temperature + precipitation)")
+    print(f"Schema : v4.0 (GraphCastSmall 168h/7-day, temperature + precipitation)")
     print(f"Grid   : {N_FRAMES} frames × {N_LAT} lat × {N_LON} lon")
     print(f"Steps  : {STEP_HOURS}h × {N_FRAMES - 1} = {(N_FRAMES-1)*STEP_HOURS}h horizon")
 
     lats, lons = make_lat_lon_grids()
-    expected_bytes = N_FRAMES * N_LAT * N_LON * 4  # 9 × 21 × 11 × 4 = 8,316
+    expected_bytes = N_FRAMES * N_LAT * N_LON * 4  # 29 × 21 × 11 × 4 = 26,796
 
     print("  Generating tp06 precipitation (mm/6h)...", end=" ", flush=True)
     precip = generate_precipitation(lats, lons)
@@ -295,7 +303,7 @@ def main() -> int:
     print(f"Demo artifacts written to {output_dir.resolve()}")
     print(f"  precipitation.bin : {N_FRAMES} × {N_LAT} × {N_LON} × float32 = {expected_bytes} bytes")
     print(f"  temperature.bin   : {N_FRAMES} × {N_LAT} × {N_LON} × float32 = {expected_bytes} bytes")
-    print(f"  forecast.json     : schema v3.0, is_demo=true, model=GraphCastSmall")
+    print(f"  forecast.json     : schema v4.0, is_demo=true, model=GraphCastSmall")
     print()
     print(f"Validate with:")
     print(f"  uv run python scripts/validate_forecast.py --data-dir {args.output_dir}")

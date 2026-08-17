@@ -3,23 +3,25 @@ import { useForecastStore } from '../data/ForecastStore';
 import type { ActiveVariable } from '../data/types';
 
 const LABELS: Record<ActiveVariable, string> = {
-  precipitation: 'Precip',
-  temperature: 'Temp',
+  precipitation:  'Precip',
+  temperature:    'Temp',
+  wind_speed:     'Wind Speed',
+  wind_direction: 'Wind Dir',
 };
 
 export function VariableSwitcher() {
   const { activeVariable, setVariable, isLoaded } = useForecastStore(
     useShallow((s) => ({
       activeVariable: s.activeVariable,
-      setVariable: s.setVariable,
-      isLoaded: s.isLoaded,
+      setVariable:    s.setVariable,
+      isLoaded:       s.isLoaded,
     })),
   );
 
   if (!isLoaded) return null;
 
   return (
-    <div className="flex items-center gap-1 mb-2">
+    <div className="flex flex-wrap items-center gap-1 mb-2">
       {(Object.keys(LABELS) as ActiveVariable[]).map((v) => (
         <button
           key={v}

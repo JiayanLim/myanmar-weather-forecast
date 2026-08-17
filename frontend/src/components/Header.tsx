@@ -12,21 +12,25 @@ function isForecastStale(generatedAtIso: string, horizonHours: number): boolean 
 }
 
 export function Header() {
-  const { metadata, isLoaded, isDemo, toggleInfoPanel } = useForecastStore(
+  const { metadata, isLoaded, isDemo, toggleInfoPanel, toggleModelEvaluation } = useForecastStore(
     useShallow((s) => ({
       metadata: s.metadata,
       isLoaded: s.isLoaded,
       isDemo: s.metadata?.is_demo ?? false,
       toggleInfoPanel: s.toggleInfoPanel,
+      toggleModelEvaluation: s.toggleModelEvaluation,
     })),
   );
+
+  const horizonH = metadata?.forecast_horizon_hours ?? 168;
+  const horizonLabel = horizonH % 24 === 0 ? `${horizonH / 24}-Day` : `${horizonH}h`;
 
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-wx-panel border-b border-wx-border shrink-0 z-10">
       <div className="flex flex-col">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold tracking-widest text-white uppercase">
-            Myanmar 48h Weather Forecast
+            Myanmar {horizonLabel} Weather Forecast
           </span>
           {isDemo && (
             <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-500 text-black">
@@ -36,10 +40,10 @@ export function Header() {
         </div>
         {isLoaded && metadata && (
           <div className="flex items-center gap-3 text-[10px] text-slate-400 mt-0.5">
-            <span>{metadata.model} {metadata.model_version}</span>
+            <span>{metadata.model}{metadata.model_version ? ` ${metadata.model_version}` : ''}</span>
             <span>·</span>
             <span title="Model resolution · Display resolution (bilinear interpolation)">
-              {metadata.spatial_resolution_deg}° model
+              {metadata.native_resolution_deg}° model
               {metadata.display_resolution_deg != null && (
                 <> · {metadata.display_resolution_deg}° display</>
               )}
@@ -59,13 +63,22 @@ export function Header() {
           </div>
         )}
       </div>
-      <button
-        onClick={toggleInfoPanel}
-        className="text-slate-400 hover:text-white transition-colors text-xs px-3 py-1.5 border border-wx-border rounded hover:border-slate-500"
-        title="About this forecast"
-      >
-        INFO
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={toggleModelEvaluation}
+          className="text-slate-400 hover:text-white transition-colors text-xs px-3 py-1.5 border border-wx-border rounded hover:border-slate-500"
+          title="Historical model evaluation vs ERA5"
+        >
+          ⓘ Model Eval
+        </button>
+        <button
+          onClick={toggleInfoPanel}
+          className="text-slate-400 hover:text-white transition-colors text-xs px-3 py-1.5 border border-wx-border rounded hover:border-slate-500"
+          title="About this forecast"
+        >
+          INFO
+        </button>
+      </div>
     </header>
   );
 }

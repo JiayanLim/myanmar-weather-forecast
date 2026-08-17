@@ -6,6 +6,7 @@ import { DemoBanner } from './components/DemoBanner';
 import { Legend } from './components/Legend';
 import { Timeline } from './components/Timeline';
 import { InfoPanel } from './components/InfoPanel';
+import { ModelEvaluation } from './components/ModelEvaluation';
 import { VariableSwitcher } from './components/VariableSwitcher';
 import { useForecastStore } from './data/ForecastStore';
 import { loadForecast } from './data/ForecastLoader';
@@ -16,22 +17,22 @@ const DATA_URL = import.meta.env.VITE_DATA_URL ?? './data';
 export function App() {
   const { setData, setError, setLoading, setMask, setMaskError, isLoaded, error, maskError, isDemo } = useForecastStore(
     useShallow((s) => ({
-      setData: s.setData,
-      setError: s.setError,
-      setLoading: s.setLoading,
-      setMask: s.setMask,
+      setData:      s.setData,
+      setError:     s.setError,
+      setLoading:   s.setLoading,
+      setMask:      s.setMask,
       setMaskError: s.setMaskError,
-      isLoaded: s.isLoaded,
-      error: s.error,
-      maskError: s.maskError,
-      isDemo: s.metadata?.is_demo ?? true,
+      isLoaded:     s.isLoaded,
+      error:        s.error,
+      maskError:    s.maskError,
+      isDemo:       s.metadata?.is_demo ?? true,
     })),
   );
 
   useEffect(() => {
     setLoading(true);
     loadForecast(DATA_URL)
-      .then((d) => setData(d.metadata, d.precipitation, d.temperature))
+      .then((d) => setData(d.metadata, d.precipitation, d.temperature, d.windSpeed, d.windDirection))
       .catch((err) => setError(String(err)));
   }, [setData, setError, setLoading]);
 
@@ -96,6 +97,7 @@ export function App() {
 
       <Timeline />
       <InfoPanel />
+      <ModelEvaluation />
     </div>
   );
 }

@@ -12,11 +12,11 @@ export function Timeline() {
   } = useForecastStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const maxIndex = (metadata?.n_times ?? 9) - 1;
+  const maxIndex = (metadata?.n_frames ?? 9) - 1;
 
   const tick = useCallback(() => {
     const store = useForecastStore.getState();
-    if (store.currentHour >= (store.metadata?.n_times ?? 9) - 1) {
+    if (store.currentHour >= (store.metadata?.n_frames ?? 9) - 1) {
       useForecastStore.getState().setHour(0);
     } else {
       store.stepForward();
@@ -115,10 +115,10 @@ export function Timeline() {
           ))}
         </div>
 
-        {/* Hour markers — every other frame to avoid crowding */}
+        {/* Hour markers — every 24h (every 4th frame at 6h step) */}
         <div className="flex items-center gap-1 text-[9px] text-slate-600">
-          {Array.from({ length: metadata?.n_times ?? 9 }, (_, i) => i)
-            .filter((i) => i % 2 === 0)
+          {Array.from({ length: metadata?.n_frames ?? 29 }, (_, i) => i)
+            .filter((i) => i % Math.round(24 / stepHours) === 0)
             .map((i, idx, arr) => (
               <span key={i}>
                 {i * stepHours}h

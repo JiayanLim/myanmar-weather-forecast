@@ -8,47 +8,40 @@ export interface BBox {
 export interface GridInfo {
   n_lat: number;
   n_lon: number;
+  resolution_deg?: number;
 }
 
-export interface TransformationProvenance {
-  source_variable: string;
-  source_unit: string;
-  conversion: string;
-  output_unit: string;
-  accumulation_period_hours?: number;  // only present for precipitation
-  log_transform_applied: boolean;
-  exp_transform_applied: boolean;
-  pipeline: string;
-}
-
+// Schema v4.0 variable metadata — fields vary per variable; file and display_unit are guaranteed.
 export interface VariableMeta {
-  display_name: string;
-  units: string;
-  source_variable: string;
-  temporal_resolution: string;
-  temporal_semantics: string;
-  temporal_disclosure?: string;
-  transformation_provenance?: TransformationProvenance;
-  t0_note?: string;
-  native_output?: boolean;
   file: string;
-  fill_value: number | null;
+  display_unit: string;
+  native_variable?: string;
+  native_variables?: string[];
+  native_unit?: string;
+  conversion?: string;
+  accumulation_period_hours?: number;
+  stats?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
+// Schema v4.0 ForecastMetadata.
+// Key renames from v3: n_times→n_frames, spatial_resolution_deg→native_resolution_deg.
+// Variables expanded to all four GCOp outputs: precipitation, temperature, wind_speed, wind_direction.
 export interface ForecastMetadata {
   schema_version: string;
   model: string;
-  model_version: string;
+  model_version?: string;
   model_checkpoint?: string;
   model_source?: string;
+  model_attribution: string;
   initialization_source: string;
   initialization_time: string;
   forecast_generated_at: string;
   forecast_horizon_hours: number;
   native_timestep_hours: number;
-  n_times: number;
-  spatial_resolution_deg: number;
-  display_resolution_deg: number | null;
+  n_frames: number;
+  native_resolution_deg: number;
+  display_resolution_deg?: number | null;
   region: string;
   bbox: BBox;
   grid: GridInfo;
@@ -58,12 +51,14 @@ export interface ForecastMetadata {
   variables: {
     precipitation: VariableMeta;
     temperature: VariableMeta;
+    wind_speed: VariableMeta;
+    wind_direction: VariableMeta;
   };
-  data_source_attribution: string;
-  model_attribution: string;
-  earth2studio_version: string;
+  data_source_attribution?: string;
+  earth2studio_version?: string;
   inference_config?: {
-    device: string;
+    hardware?: string;
+    device?: string;
     jax_backend?: string | null;
     rss_peak_gb?: number | null;
     [key: string]: unknown;
@@ -71,5 +66,5 @@ export interface ForecastMetadata {
   is_demo: boolean;
 }
 
-export type ActiveVariable = 'precipitation' | 'temperature';
+export type ActiveVariable = 'precipitation' | 'temperature' | 'wind_speed' | 'wind_direction';
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4;

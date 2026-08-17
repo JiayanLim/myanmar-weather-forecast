@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'frontend/**'
+      - 'data/forecast_v4/**'
+      - 'data/verification/**'
+      - 'data/demo/**'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -40,19 +43,71 @@ jobs:
           VITE_DATA_URL: /myanmar-weather-forecast/data
         run: npm run build
 
-      - name: Copy forecast data into dist
+      - name: Copy forecast data into dist (schema v4.0 — five binaries required)
         run: |
           mkdir -p frontend/dist/data
-          if [ -f data/forecast/forecast.json ] && [ -f data/forecast/temperature.bin ] && [ -f data/forecast/precipitation.bin ]; then
-            echo "Using real forecast data from data/forecast/"
-            cp data/forecast/forecast.json frontend/dist/data/
-            cp data/forecast/temperature.bin frontend/dist/data/
-            cp data/forecast/precipitation.bin frontend/dist/data/
+
+          # Prefer data/forecast_v4/ (real GCOp 7-day forecast, schema v4.0)
+          # Requires all five files: forecast.json + 4 variable binaries
+          if [ -f data/forecast_v4/forecast.json ] && \
+             [ -f data/forecast_v4/temperature.bin ] && \
+             [ -f data/forecast_v4/precipitation.bin ] && \
+             [ -f data/forecast_v4/wind_speed.bin ] && \
+             [ -f data/forecast_v4/wind_direction.bin ]; then
+            echo "Using real GCOp v4.0 forecast from data/forecast_v4/"
+            cp data/forecast_v4/forecast.json       frontend/dist/data/
+            cp data/forecast_v4/temperature.bin     frontend/dist/data/
+            cp data/forecast_v4/precipitation.bin   frontend/dist/data/
+            cp data/forecast_v4/wind_speed.bin      frontend/dist/data/
+            cp data/forecast_v4/wind_direction.bin  frontend/dist/data/
+          # Fallback: data/demo/ (schema v4.0 demo data — requires RS11 completion)
+          elif [ -f data/demo/forecast.json ] && \
+               [ -f data/demo/temperature.bin ] && \
+               [ -f data/demo/precipitation.bin ] && \
+               [ -f data/demo/wind_speed.bin ] && \
+               [ -f data/demo/wind_direction.bin ]; then
+            echo "Using schema v4.0 demo data from data/demo/"
+            cp data/demo/forecast.json       frontend/dist/data/
+            cp data/demo/temperature.bin     frontend/dist/data/
+            cp data/demo/precipitation.bin   frontend/dist/data/
+            cp data/demo/wind_speed.bin      frontend/dist/data/
+            cp data/demo/wind_direction.bin  frontend/dist/data/
           else
-            echo "No real forecast found — using demo data from data/demo/"
-            cp data/demo/forecast.json frontend/dist/data/
-            cp data/demo/temperature.bin frontend/dist/data/
-            cp data/demo/precipitation.bin frontend/dist/data/
+            echo "ERROR: No valid schema v4.0 forecast data found."
+            echo "  data/forecast_v4/ requires: forecast.json + 4 variable .bin files"
+            echo "  data/demo/        requires: forecast.json + 4 variable .bin files (see RS11)"
+            exit 1
+          fi
+
+      - name: Copy verification results into dist
+        run: |
+          if [ -f data/verification/verification.json ]; then
+            echo "Copying verification.json (schema v2.0)"
+            cp data/verification/verification.json frontend/dist/data/
+          else
+            echo "WARNING: data/verification/verification.json not found — Model Evaluation panel will show error state"
+          fi
+
+      - name: Verify dist/data contents
+        run: |
+          echo "=== dist/data contents ==="
+          ls -lh frontend/dist/data/
+          echo ""
+          echo "=== Checking required v4.0 files ==="
+          for f in forecast.json temperature.bin precipitation.bin wind_speed.bin wind_direction.bin; do
+            if [ -f "frontend/dist/data/$f" ]; then
+              SIZE=$(stat -c%s "frontend/dist/data/$f")
+              echo "  OK: $f ($SIZE bytes)"
+            else
+              echo "  MISSING: $f"
+              exit 1
+            fi
+          done
+          echo ""
+          if [ -f frontend/dist/data/verification.json ]; then
+            echo "  OK: verification.json"
+          else
+            echo "  ABSENT: verification.json (Model Evaluation will degrade gracefully)"
           fi
 
       - uses: actions/upload-pages-artifact@v3

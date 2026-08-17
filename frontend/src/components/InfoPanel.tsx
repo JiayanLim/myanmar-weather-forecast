@@ -19,9 +19,9 @@ function formatDt(iso: string): string {
 export function InfoPanel() {
   const { showInfoPanel, toggleInfoPanel, metadata } = useForecastStore(
     useShallow((s) => ({
-      showInfoPanel: s.showInfoPanel,
+      showInfoPanel:   s.showInfoPanel,
       toggleInfoPanel: s.toggleInfoPanel,
-      metadata: s.metadata,
+      metadata:        s.metadata,
     })),
   );
 
@@ -50,8 +50,14 @@ export function InfoPanel() {
             )}
 
             <div className="grid grid-cols-2 gap-3">
-              <Row label="Model" value={`${metadata.model} ${metadata.model_version}`} />
-              <Row label="Model resolution" value={`${metadata.spatial_resolution_deg}° (~111 km)`} />
+              <Row
+                label="Model"
+                value={`${metadata.model}${metadata.model_version ? ` ${metadata.model_version}` : ''}`}
+              />
+              <Row
+                label="Model resolution"
+                value={`${metadata.native_resolution_deg}° (~${Math.round(metadata.native_resolution_deg * 111)} km)`}
+              />
               {metadata.display_resolution_deg != null && (
                 <Row label="Display resolution" value={`${metadata.display_resolution_deg}° — interpolated`} />
               )}
@@ -61,7 +67,10 @@ export function InfoPanel() {
               <Row label="Init time" value={formatDt(metadata.initialization_time)} />
               <Row label="Generated" value={formatDt(metadata.forecast_generated_at)} />
               {metadata.inference_config && (
-                <Row label="Generated on" value={metadata.inference_config.device} />
+                <Row
+                  label="Generated on"
+                  value={String(metadata.inference_config.hardware ?? metadata.inference_config.device ?? '—')}
+                />
               )}
             </div>
 
@@ -70,54 +79,91 @@ export function InfoPanel() {
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Variables</h3>
               <div className="flex flex-col gap-3 text-sm">
+
                 <div>
                   <span className="text-white font-medium">
-                    Temperature · {metadata.variables.temperature.units}
+                    Temperature · {metadata.variables.temperature.display_unit}
                   </span>
-                  <p className="text-slate-400 text-xs mt-0.5">
-                    {metadata.variables.temperature.temporal_semantics}
-                  </p>
                   <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
-                    {metadata.variables.temperature.transformation_provenance?.pipeline}
+                    {metadata.variables.temperature.conversion}
                   </p>
                 </div>
+
                 <div>
                   <span className="text-white font-medium">
-                    Precipitation · {metadata.variables.precipitation.units}
+                    Precipitation · {metadata.variables.precipitation.display_unit}
                   </span>
                   <p className="text-slate-400 text-xs mt-0.5">
-                    {metadata.variables.precipitation.temporal_semantics}
+                    Estimated average rainfall rate for each 6-hour forecast period.
+                    Not an instantaneous rate.
                   </p>
-                  {metadata.variables.precipitation.temporal_disclosure && (
-                    <p className="text-amber-400/80 text-[10px] mt-1 italic">
-                      {metadata.variables.precipitation.temporal_disclosure}
-                    </p>
-                  )}
                   <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
-                    {metadata.variables.precipitation.transformation_provenance?.pipeline}
+                    {metadata.variables.precipitation.conversion}
                   </p>
                 </div>
+
+                <div>
+                  <span className="text-white font-medium">
+                    Wind Speed · {metadata.variables.wind_speed.display_unit}
+                  </span>
+                  <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
+                    {metadata.variables.wind_speed.conversion}
+                  </p>
+                </div>
+
+                <div>
+                  <span className="text-white font-medium">
+                    Wind Direction · {metadata.variables.wind_direction.display_unit}
+                  </span>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    Meteorological FROM direction. Display uses vector-component bilinear interpolation.
+                  </p>
+                  <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
+                    {metadata.variables.wind_direction.conversion}
+                  </p>
+                </div>
+
               </div>
             </div>
 
             <hr className="border-wx-border" />
 
-            <div className="flex flex-col gap-2">
-              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Initialization Data</h3>
-              <p className="text-xs text-slate-400">{metadata.data_source_attribution}</p>
-            </div>
-
-            <hr className="border-wx-border" />
+            {metadata.data_source_attribution && (
+              <>
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Initialization Data</h3>
+                  <p className="text-xs text-slate-400">{metadata.data_source_attribution}</p>
+                </div>
+                <hr className="border-wx-border" />
+              </>
+            )}
 
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Limitations</h3>
               <ul className="text-[11px] text-slate-400 list-disc list-inside space-y-1">
-                <li>The {metadata.spatial_resolution_deg}° model grid (~111 km) represents large-scale atmospheric conditions and should not be interpreted as neighborhood-scale weather prediction.</li>
-                <li>The display uses bilinear interpolation to 0.05° for visual clarity. This does not add forecast information beyond the native {metadata.spatial_resolution_deg}° model resolution.</li>
-                <li>Forecast skill degrades over the {metadata.forecast_horizon_hours}-hour window, particularly for rapidly evolving convective systems.</li>
-                <li>Precipitation represents total accumulation during the indicated 6-hour forecast period, not an instantaneous rainfall rate.</li>
+                <li>
+                  The {metadata.native_resolution_deg}° model grid (~{Math.round(metadata.native_resolution_deg * 111)} km)
+                  represents large-scale atmospheric conditions and should not be interpreted as
+                  neighborhood-scale weather prediction.
+                </li>
+                <li>
+                  The display uses bilinear interpolation to 0.05° for visual clarity. This does not
+                  add forecast information beyond the native {metadata.native_resolution_deg}° model resolution.
+                  Wind direction uses vector-component interpolation (sin/cos, not raw degrees).
+                </li>
+                <li>
+                  Forecast skill degrades over the {metadata.forecast_horizon_hours}-hour window,
+                  particularly for rapidly evolving convective systems.
+                </li>
+                <li>
+                  Precipitation represents estimated average rainfall rate (mm/hr) for each 6-hour
+                  forecast period, not an instantaneous rate.
+                </li>
                 {metadata.is_demo && (
-                  <li className="text-amber-400">This is <strong>synthetic demo data</strong> — not a real weather forecast. Do not use for any decision-making.</li>
+                  <li className="text-amber-400">
+                    This is <strong>synthetic demo data</strong> — not a real weather forecast.
+                    Do not use for any decision-making.
+                  </li>
                 )}
               </ul>
             </div>
@@ -127,7 +173,11 @@ export function InfoPanel() {
             <div className="flex flex-col gap-1">
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Attribution</h3>
               <p className="text-[10px] text-slate-500">{metadata.model_attribution}</p>
-              <p className="text-[10px] text-slate-500">Framework: NVIDIA Earth2Studio ≥ {metadata.earth2studio_version}</p>
+              {metadata.earth2studio_version && (
+                <p className="text-[10px] text-slate-500">
+                  Framework: NVIDIA Earth2Studio ≥ {metadata.earth2studio_version}
+                </p>
+              )}
               <p className="text-[10px] text-slate-500">Basemap: © OpenStreetMap contributors</p>
             </div>
           </div>
