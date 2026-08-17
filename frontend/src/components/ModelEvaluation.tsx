@@ -203,10 +203,11 @@ export function ModelEvaluation() {
                   MAE: {vars.temperature.summary.mae.toFixed(4)}°C &nbsp;
                   RMSE: {vars.temperature.summary.rmse.toFixed(4)}°C &nbsp;
                   Bias: {sign(vars.temperature.summary.bias)}{vars.temperature.summary.bias.toFixed(4)}°C &nbsp;
-                  ({vars.temperature.summary.n_frames} frames incl. t+0h init state)
+                  ({vars.temperature.summary.n_frames} frames incl. t+0h)
                 </p>
                 <p className="text-[10px] text-slate-500 mb-2 italic">
-                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state = ERA5 analysis; error = 0 by construction) excluded from table.
+                  Summary includes t+0h (init state = ERA5 analysis; error = 0 by construction) — slightly optimistic for forecast-only skill.
+                  Table shows forecast leads +6h–+{mm.forecast_horizon_hours}h only and is a more representative view of model performance.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -284,10 +285,11 @@ export function ModelEvaluation() {
                   MAE: {vars.wind_speed.summary.mae.toFixed(4)} kt &nbsp;
                   RMSE: {vars.wind_speed.summary.rmse.toFixed(4)} kt &nbsp;
                   Bias: {sign(vars.wind_speed.summary.bias)}{vars.wind_speed.summary.bias.toFixed(4)} kt &nbsp;
-                  ({vars.wind_speed.summary.n_frames} frames incl. t+0h init state)
+                  ({vars.wind_speed.summary.n_frames} frames incl. t+0h)
                 </p>
                 <p className="text-[10px] text-slate-500 mb-2 italic">
-                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state = ERA5 analysis; error = 0 by construction) excluded from table.
+                  Summary includes t+0h (init state = ERA5 analysis; error = 0 by construction) — slightly optimistic for forecast-only skill.
+                  Table shows forecast leads +6h–+{mm.forecast_horizon_hours}h only and is a more representative view of model performance.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -323,10 +325,11 @@ export function ModelEvaluation() {
                 </h3>
                 <p className="text-[10px] text-slate-400 mb-1">
                   Circular MAE: {vars.wind_direction.summary.circular_mae.toFixed(4)}° &nbsp;
-                  ({vars.wind_direction.summary.n_frames} frames incl. t+0h init state)
+                  ({vars.wind_direction.summary.n_frames} frames incl. t+0h)
                 </p>
                 <p className="text-[10px] text-slate-500 mb-2 italic">
-                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state; circular MAE = 0 by construction) excluded from table.
+                  Summary includes t+0h (init state; circular MAE = 0 by construction) — slightly optimistic for forecast-only skill.
+                  Table shows forecast leads +6h–+{mm.forecast_horizon_hours}h only and is a more representative view of model performance.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
