@@ -7,6 +7,7 @@
 **Revised**: 2026-08-17 v6 — R4 COMPLETE; R044 PASS; RS10 COMPLETE; R5 COMPLETE; ADR-023 closed
 **Revised**: 2026-08-17 v7 — R6 COMPLETE (types+loader+store+all components+build); R7 COMPLETE; R8 COMPLETE
 **Revised**: 2026-08-17 v8 — R10 COMPLETE; R11 COMPLETE (superseded by R12 — defect); R12 tasks added
+**Revised**: 2026-08-17 v10 — R13 COMPLETE (precip sqrt scale); R14 COMPLETE (MMT local time)
 
 ---
 
@@ -481,7 +482,7 @@ All R7 tasks completed as part of the unified R6 authorization. See Phase R6 abo
 
 ---
 
-## Phase R12: SVG Wind Arrow Overlay — NOT STARTED
+## Phase R12: SVG Wind Arrow Overlay — COMPLETE (2026-08-17, commit fb9a7cf)
 
 **Classification**: Defect fix + UX improvement. Replaces Phase R11.
 **Prerequisite**: R10 COMPLETE ✓; ADR-025 ACCEPTED ✓; R11 defects documented ✓.
@@ -553,6 +554,111 @@ All R7 tasks completed as part of the unified R6 authorization. See Phase R6 abo
 - [ ] R12j Commit and push to main; confirm GitHub Pages redeploy succeeds.
 
 **Gate**: tsc 0 errors; build passes; full-domain distribution confirmed; all cardinal sanity tests pass; no step-transition regression; deployed.
+
+---
+
+## Phase R12: SVG Wind Arrow Overlay — COMPLETE (2026-08-17, commit fb9a7cf)
+
+See Phase R12 in plan.md. Distribution defect fixed; HSL raster retired; deployed.
+
+---
+
+## Phase R13: Precipitation Sqrt Color Scale — COMPLETE (2026-08-17)
+
+**Classification**: Visualization calibration fix (FR-N23b). No data modification.
+**Prerequisite**: R12 COMPLETE ✓. Diagnostic investigation complete ✓.
+
+**Diagnostic summary** (read-only investigation, 2026-08-17):
+- P50=0.000288, P75=0.005, P90=0.028, P95=0.084, P99=0.406, max=1.620 mm/hr
+- 87.8% of values invisible at current 0.020 mm/hr cutoff
+- Sqrt scale: P90 maps to norm=0.118, P95 to 0.205, P99 to 0.450 — spread across ramp
+- With cutoff 0.003 mm/hr + sqrt: 25.5% of values visible (vs 12.2% currently)
+- precipitation.bin and verification.json: UNCHANGED
+
+- [x] R13a Diagnostic pre-read confirmed (above). No code changes until spec approved.
+
+- [x] R13b Edit `frontend/src/map/colorscales.ts`:
+      - `renderWithInterpolation`: add `sqrtScale = false` parameter (7th positional param after mask)
+        When true: `const norm = Math.sqrt(Math.max(0, Math.min(1, (v-vmin)/range)));`
+        When false: linear norm as before
+      - `PRECIP_LUT_ALPHA`: update alpha cutoffs for sqrt-norm space:
+        `const CUT_LO = Math.sqrt(0.003 / 2.0); // ≈0.039 — fully transparent below`
+        `const CUT_HI = Math.sqrt(0.010 / 2.0); // ≈0.071 — fully opaque above`
+        `alpha = norm < CUT_LO ? 0 : norm < CUT_HI ? round((norm-CUT_LO)/(CUT_HI-CUT_LO)*200) : 200`
+      - `PRECIP_TICKS`: [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
+      - Update PRECIP comment to describe sqrt scale
+
+- [x] R13c Edit `frontend/src/map/WeatherMap.tsx`:
+      - Precipitation `renderWithInterpolation` call: add `true` for sqrtScale parameter
+      - All other calls (temperature, wind_speed): unchanged (sqrtScale defaults to false)
+
+- [x] R13d Edit `frontend/src/components/Legend.tsx`:
+      - Precipitation tooltip: update to describe sqrt scale and the extended tick range
+
+- [x] R13e Validate:
+      - `npx tsc --noEmit` → 0 errors
+      - `npm run build` → passes
+      - Visual: light rain visible in frames 12–28 (which have 15–33% of points > 0.01 mm/hr)
+      - Visual: differentiation preserved — 0.084 mm/hr (P95) clearly different from 0.406 (P99)
+      - Visual: frame 0 remains fully transparent (all zeros by GCOp convention)
+      - Visual: max (1.62 mm/hr) is at/near full color, not saturated
+
+- [x] R13f Commit and push to main; confirm GitHub Pages redeploy.
+
+**Gate**: tsc 0 errors; build passes; light rain visible in frames 12–28; data and verification unchanged.
+
+---
+
+## Phase R14: Temperature Display Context (Myanmar Local Time) — COMPLETE (2026-08-17)
+
+**Classification**: Display context improvement (FR-N30). No data modification.
+**Prerequisite**: R13 COMPLETE.
+
+**Diagnostic summary** (read-only investigation, 2026-08-17):
+- Temperature pipeline confirmed correct: K−273.15 applied; no double conversion; grid indexing correct
+- t+0h = 00:00Z = 06:30 MMT (pre-dawn). Yangon: 21.1°C at t+0h; 28.9°C at t+6h (12:30 MMT)
+- GCOp bias: −0.76°C avg vs ERA5. Diurnal: −1.45°C at 12Z daytime, ≈0 at 18Z midnight
+- Root cause of perceived cold: temporal mismatch (00Z = pre-dawn MMT) + model characteristic
+- temperature.bin and verification.json: UNCHANGED
+
+- [x] R14a Confirm diagnostic findings above. No code changes until pre-read confirmed.
+
+- [x] R14b Edit `frontend/src/map/WeatherMap.tsx` — popup time display:
+      - Add MMT time alongside UTC:
+        `const mmtOffsetMs = (6 * 60 + 30) * 60000;`
+        `const mmtStr = new Date(dt.getTime() + mmtOffsetMs).toUTCString().replace(' GMT','').slice(5)+'MMT';`
+      - Popup time row: `<div class="wx-popup-time">${timeStr} · ${mmtStr}</div>`
+        OR separate rows: UTC on first line, MMT on second line
+
+- [x] R14c Edit `frontend/src/components/InfoPanel.tsx`:
+      - Add timezone note: "All times UTC. Myanmar Standard Time = UTC+6:30 (MMT, no DST)."
+      - For temperature: add note about documented GCOp cold bias (−0.76°C avg vs ERA5,
+        diurnal pattern; see model evaluation panel for details).
+
+- [x] R14d Validate:
+      - `npx tsc --noEmit` → 0 errors
+      - `npm run build` → passes
+      - Popup shows e.g. "Fri, 01 Jan 2021 00:00:00 UTC · 06:30 MMT"
+      - t+6h popup shows "Fri, 01 Jan 2021 06:00:00 UTC · 12:30 MMT"
+
+- [x] R14e Commit and push to main; confirm GitHub Pages redeploy.
+
+**Gate**: tsc 0 errors; build passes; popup shows UTC + MMT; deployed.
+
+---
+
+## Acceptance Criteria (R13 + R14)
+
+| Criterion | Specification |
+|---|---|
+| Temperature displayed value | Exactly matches temperature.bin at the documented K−273.15 conversion. No additional conversion. |
+| Frame/location mapping | latIdx = round((lat − 9.0) / 0.25); lonIdx = round((lon − 92.0) / 0.25). Verified in diagnostic. |
+| External website comparison | Diagnostic only, not ground truth. January 2021 vs current year; 00Z (06:30 MMT) vs daytime. |
+| Temperature data | temperature.bin and verification.json: UNCHANGED. |
+| Non-zero rainfall visible | P75 (0.005 mm/hr) and above: visible with sqrt scale. |
+| Light rainfall not disappearing | P90 (0.028 mm/hr): clearly visible; P95 (0.084): strong color. |
+| Color differentiation | P90 (0.028) visually distinct from P99 (0.406) and max (1.62). |
+| Precipitation data | precipitation.bin and verification.json: UNCHANGED. |
 
 ---
 

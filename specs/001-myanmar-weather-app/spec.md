@@ -8,6 +8,7 @@
 **Revised**: 2026-08-16 v5 — Section B updated: GCOp confirmed, all TBDs resolved, FRs updated
 **Revised**: 2026-08-17 v6 — FR-N40–N45 COMPLETE; ADR-023 closed; R4/R5 COMPLETE
 **Revised**: 2026-08-17 v7 — FR-W01–FR-W07 rewritten (SVG overlay, R12); ADR-025; FR-N23 updated
+**Revised**: 2026-08-17 v8 — FR-N23b (precip sqrt scale), FR-N30 (MMT local time); R13/R14 diagnostic findings
 **Status**: LEGACY (v3) deployed. NEW TARGET (v4) R4/R5 COMPLETE — R6 NOT STARTED.
 **Constitution**: `.specify/memory/constitution.md` v3.2.0
 
@@ -241,15 +242,44 @@ Do NOT implement until the forecast pipeline is working and verified.
   Precipitation 0–2 mm/hr; Wind Speed 0–30 kt; Wind Direction: compass description (no hue raster;
   arrows are the sole direction encoding); Temperature 15–40 °C.
 
-- **FR-N23a**: Precipitation color scale calibration (R10, 2026-08-17).
-  PRECIP_MAX = 2 mm/hr; fully-transparent cutoff at 0.02 mm/hr (norm < 0.002).
-  Rationale: R4 January 2021 data maximum = 1.62 mm/hr (no saturation at PRECIP_MAX=2);
-  P95 = 0.084 mm/hr (visible above cutoff); median ≈ 0.0003 mm/hr (correctly suppressed as noise).
-  Ticks: [0, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr.
-  This is a display calibration, not a physical upper bound on Myanmar precipitation.
-  Monsoon-season data routinely exceeds 2 mm/hr; recalibration will be required before
-  serving wet-season forecasts. The color scale MUST be documented as dry-season calibrated
-  in the legend or info panel.
+- **FR-N23a**: Precipitation color scale calibration (R10, 2026-08-17) — superseded by FR-N23b
+  for the sqrt-scale redesign. PRECIP_MAX = 2 mm/hr remains locked.
+
+- **FR-N23b**: Precipitation sqrt color scale (R13, 2026-08-17).
+  Supersedes the linear alpha ramp from FR-N23a. Rationale from diagnostic investigation:
+  R4 January 2021 distribution is heavily right-skewed (P50=0.000288, P75=0.005, P90=0.028,
+  P95=0.084, P99=0.406, max=1.620 mm/hr). The linear scale compressed 99% of non-zero data
+  into 22% of the color ramp; the current 0.020 mm/hr cutoff suppresses 87.8% of all values.
+  Fix:
+  - Color norm: `norm_display = sqrt(v / PRECIP_MAX)` — a sqrt transform so that P90 (0.028
+    mm/hr) maps to norm=0.12, P95 (0.084) to 0.20, P99 (0.406) to 0.45, max (1.62) to 0.90.
+  - Visibility cutoff: v < 0.003 mm/hr → fully transparent (noise suppression).
+  - Alpha ramp: v 0.003–0.010 mm/hr → partial opacity (in sqrt-norm space: 0.039–0.071).
+  - Full opacity: v ≥ 0.010 mm/hr (norm_display ≥ 0.071).
+  - PRECIP_MAX = 2.0 mm/hr unchanged (no saturation; R4 max = 1.62 mm/hr).
+  - Ticks: [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr (spaced for sqrt visual scale).
+  - Implementation: add `sqrtScale?: boolean` param to `renderWithInterpolation`; pass
+    `true` for precipitation only. Legend note updated to "sqrt scale calibrated for Jan 2021".
+  - Underlying precipitation.bin values and verification.json metrics: UNCHANGED.
+
+- **FR-N30**: Temperature display: Myanmar local time (MMT) in popup and timeline.
+  Diagnostic confirmed: temperature binary values are correct (K−273.15 applied, no
+  double conversion, correct grid indexing, diurnal cycle present). The perceived cold bias
+  is explained by:
+  (1) The default display frame (t+0h = 2021-01-01T00:00:00Z = 06:30 MMT local) is pre-dawn,
+      the coolest part of the diurnal cycle. Yangon at t+0h: 21.1°C; at t+6h (12:30 MMT): 28.9°C.
+  (2) GCOp documented cold bias: −0.76°C average vs ERA5; strongly diurnal (−1.45°C at 12Z,
+      near zero at 18Z). This is a known model characteristic, not a data defect.
+  (3) External weather sites show current/recent temperatures — a different year and/or time
+      of day, not January 2021 at the displayed UTC hour.
+  Frontend fix (no data change): display Myanmar time alongside UTC so users understand which
+  part of the diurnal cycle is displayed.
+  - Popup time line: show both UTC and MMT (UTC+6:30), e.g. "Mon 01 Jan 2021 00:00 UTC · 06:30 MMT"
+  - Timeline component: existing UTC label unchanged; add "MMT" suffix or parenthetical at key markers
+  - Info panel: add note that times are UTC; Myanmar local time = UTC+6:30 (MMT, no DST)
+  - The cold bias (−0.76°C systematic) MUST NOT be "corrected" in the data. Document only.
+  - No modification to temperature.bin, forecast.json, or verification.json.
+
 - **FR-N24**: Popup displays all four variable values at clicked grid point for current step
 - **FR-N25**: Header: "Myanmar 7-Day AI Weather Forecast" (derived from forecast_horizon_hours=168)
 - **FR-N26**: Info panel: model, 0.25° resolution (~28 km), timestep, init time (2021-01-01T00Z),

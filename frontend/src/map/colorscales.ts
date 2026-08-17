@@ -54,34 +54,50 @@ export const TEMP_LUT = buildLUT([
   { pos: 1.00, r: 165, g: 0,   b: 38  }, // 40°C  dark red
 ]);
 
-// Precipitation: near-transparent → cyan → blue → green → yellow → red (0 to 2 mm/hr)
-// v4.0 unit: mm/hr (estimated average rainfall rate)
-// Scale calibrated for January 2021 dry-season dataset (FR-N23a):
-//   max observed = 1.62 mm/hr (no saturation); P95 = 0.084 mm/hr (visible above cutoff).
-//   Monsoon-season data may saturate above 2 mm/hr — recalibration required for wet-season use.
+// Precipitation: sqrt color scale (FR-N23b, R13).
+// v4.0 unit: mm/hr (estimated average rainfall rate). PRECIP_MAX = 2 mm/hr.
+//
+// Rendering applies sqrt transform: norm_display = sqrt(v / PRECIP_MAX).
+// This spreads the right-skewed January 2021 distribution across the full color ramp:
+//   P75  (0.005 mm/hr) → norm=0.050  faint trace
+//   P90  (0.028 mm/hr) → norm=0.118  light blue  (clearly visible)
+//   P95  (0.084 mm/hr) → norm=0.205  medium blue (strong)
+//   P99  (0.406 mm/hr) → norm=0.450  green
+//   max  (1.620 mm/hr) → norm=0.900  orange-red  (no saturation)
+//   2.0  mm/hr          → norm=1.000  deep red
+//
+// LUT pos values are in sqrt-norm space (pos = sqrt(v / PRECIP_MAX)).
+// Dry-season calibration; monsoon data may saturate — recalibration required for wet season.
 export const PRECIP_MIN = 0;
 export const PRECIP_MAX = 2;
 export const PRECIP_LUT = buildLUT([
-  { pos: 0.00, r: 255, g: 255, b: 255 }, // 0       white
-  { pos: 0.05, r: 200, g: 230, b: 255 }, // 0.5     pale blue
-  { pos: 0.10, r: 100, g: 190, b: 255 }, // 1       sky blue
-  { pos: 0.20, r: 30,  g: 130, b: 255 }, // 2       blue
-  { pos: 0.35, r: 0,   g: 200, b: 150 }, // 3.5     teal-green
-  { pos: 0.55, r: 50,  g: 220, b: 50  }, // 5.5     green
-  { pos: 0.75, r: 255, g: 220, b: 0   }, // 7.5     yellow
-  { pos: 0.90, r: 255, g: 120, b: 0   }, // 9       orange
-  { pos: 1.00, r: 200, g: 0,   b: 0   }, // 10+     red
+  { pos: 0.000, r: 210, g: 235, b: 255 }, // 0         very pale blue (trace)
+  { pos: 0.118, r:  90, g: 175, b: 255 }, // P90 0.028 light blue
+  { pos: 0.205, r:  20, g: 120, b: 255 }, // P95 0.084 medium blue
+  { pos: 0.316, r:   0, g: 185, b: 135 }, // ~0.20     blue-teal
+  { pos: 0.450, r:  50, g: 210, b:  50 }, // P99 0.406 green
+  { pos: 0.600, r: 190, g: 230, b:   0 }, // ~0.72     yellow-green
+  { pos: 0.707, r: 255, g: 200, b:   0 }, // 1.0 mm/hr yellow
+  { pos: 0.900, r: 255, g:  90, b:   0 }, // max 1.62  orange
+  { pos: 1.000, r: 190, g:   0, b:   0 }, // 2.0+      deep red
 ]);
 
-// Near-zero precipitation rendered as fully transparent (noise suppression).
-// Cutoff: norm < 0.01 → transparent (= 0.02 mm/hr at PRECIP_MAX=2).
-// Ramp: norm 0.01–0.05 → partial opacity (= 0.02–0.10 mm/hr). Above 0.05 → full opacity.
+// Alpha ramp in sqrt-norm space (FR-N23b):
+//   v < 0.003 mm/hr → fully transparent (noise suppression)
+//   v 0.003–0.010   → ramp 0→200 (in sqrt-norm: 0.039–0.071)
+//   v ≥ 0.010       → fully opaque (alpha=200)
 export const PRECIP_LUT_ALPHA = (() => {
   const lut = new Uint8ClampedArray(PRECIP_LUT);
   const size = lut.length / 4;
+  // Cutoffs expressed as sqrt(v / PRECIP_MAX) — the same norm used during rendering.
+  const CUT_LO = Math.sqrt(0.003 / PRECIP_MAX); // ≈0.0387
+  const CUT_HI = Math.sqrt(0.010 / PRECIP_MAX); // ≈0.0707
   for (let i = 0; i < size; i++) {
     const norm = i / (size - 1);
-    const alpha = norm < 0.01 ? 0 : norm < 0.05 ? Math.round((norm - 0.01) / 0.04 * 200) : 200;
+    const alpha =
+      norm < CUT_LO ? 0 :
+      norm < CUT_HI ? Math.round((norm - CUT_LO) / (CUT_HI - CUT_LO) * 200) :
+      200;
     lut[i * 4 + 3] = alpha;
   }
   return lut;
@@ -113,7 +129,7 @@ export const WIND_LUT_ALPHA = (() => {
 })();
 
 export const TEMP_TICKS   = [15, 20, 25, 30, 35, 40];
-export const PRECIP_TICKS = [0, 0.1, 0.25, 0.5, 1.0, 2.0]; // calibrated for Jan 2021 dry season
+export const PRECIP_TICKS = [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0]; // sqrt scale; Jan 2021 dry season
 export const WIND_TICKS   = [0, 5, 10, 15, 20, 25, 30];
 
 /** HSL to RGB conversion. h in [0,360], s and l in [0,1]. */
@@ -174,6 +190,7 @@ export function renderWithInterpolation(
   nLatSrc: number,
   nLonSrc: number,
   mask: Uint8Array | null,
+  sqrtScale = false,
 ): Uint8ClampedArray {
   const nLatDst = DISPLAY_N_LAT;
   const nLonDst = DISPLAY_N_LON;
@@ -210,7 +227,8 @@ export function renderWithInterpolation(
               + v10 * ty * (1 - tx)
               + v11 * ty * tx;
 
-      const norm = Math.max(0, Math.min(1, (v - vmin) / range));
+      const linearNorm = Math.max(0, Math.min(1, (v - vmin) / range));
+      const norm = sqrtScale ? Math.sqrt(linearNorm) : linearNorm;
       const idx = Math.round(norm * 255);
       rgba[pix * 4 + 0] = lut[idx * 4 + 0];
       rgba[pix * 4 + 1] = lut[idx * 4 + 1];

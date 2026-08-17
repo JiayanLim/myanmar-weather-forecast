@@ -13,6 +13,17 @@ import { DISPLAY_N_LAT, DISPLAY_N_LON } from '../geo/mask';
 
 const MYANMAR_CENTER: [number, number] = [96.5, 19.0];
 
+/** Format a UTC ISO timestamp as Myanmar Standard Time (UTC+6:30, no DST). */
+function toMMTStr(utcIso: string): string {
+  const dt = new Date(utcIso);
+  if (isNaN(dt.getTime())) return '';
+  const mmtMs = dt.getTime() + 390 * 60 * 1000; // +6h30m
+  const mmt = new Date(mmtMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${pad(mmt.getUTCHours())}:${pad(mmt.getUTCMinutes())} MMT · ${mmt.getUTCDate()} ${months[mmt.getUTCMonth()]} ${mmt.getUTCFullYear()}`;
+}
+
 /** Compass bearing label for a FROM direction in degrees. */
 function compassLabel(deg: number): string {
   const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
@@ -162,7 +173,8 @@ export function WeatherMap() {
     if (!data || !lut) return;
 
     const frame = getFrame(data, currentHour, n_lat, n_lon);
-    const rgba = renderWithInterpolation(frame, lut, vmin, vmax, modelStep, n_lat, n_lon, mask);
+    const sqrtScale = activeVariable === 'precipitation';
+    const rgba = renderWithInterpolation(frame, lut, vmin, vmax, modelStep, n_lat, n_lon, mask, sqrtScale);
 
     canvas.width  = DISPLAY_N_LON;
     canvas.height = DISPLAY_N_LAT;
@@ -218,6 +230,7 @@ export function WeatherMap() {
       const validTime = metadata.times_utc[currentHour] ?? '';
       const dt = new Date(validTime);
       const timeStr = dt.toUTCString().replace(' GMT', ' UTC');
+      const mmtStr = validTime ? toMMTStr(validTime) : '';
       const stepHours = metadata.native_timestep_hours ?? 6;
       const leadH = currentHour * stepHours;
 
@@ -242,6 +255,7 @@ export function WeatherMap() {
         <div class="wx-popup">
           <div class="wx-popup-title">Myanmar</div>
           <div class="wx-popup-time">${timeStr}</div>
+          ${mmtStr ? `<div class="wx-popup-time" style="opacity:0.7">${mmtStr}</div>` : ''}
           <div class="wx-popup-row">
             <span class="wx-popup-label">${activeLabel}</span>
             <span class="wx-popup-value">${activeValStr}</span>

@@ -20,8 +20,10 @@ function buildGradientStyle(lut: Uint8ClampedArray): string {
   return `linear-gradient(to right, ${stops.join(', ')})`;
 }
 
-function tickPosition(val: number, min: number, max: number): number {
-  return ((val - min) / (max - min)) * 100;
+function tickPosition(val: number, min: number, max: number, sqrtScale = false): number {
+  const linear = (val - min) / (max - min);
+  const norm = sqrtScale ? Math.sqrt(Math.max(0, linear)) : linear;
+  return norm * 100;
 }
 
 /** Wind direction legend: compass description; arrows are the sole direction encoding (FR-W01a). */
@@ -74,6 +76,7 @@ export function Legend() {
   const vmax  = isPrecip ? PRECIP_MAX       : isWind ? WIND_MAX       : TEMP_MAX;
   const ticks = isPrecip ? PRECIP_TICKS     : isWind ? WIND_TICKS     : TEMP_TICKS;
   const gradient = buildGradientStyle(lut);
+  const sqrtScale = isPrecip;
 
   return (
     <div className="flex flex-col gap-1">
@@ -88,8 +91,8 @@ export function Legend() {
               <div className="absolute bottom-5 right-0 hidden group-hover:block bg-wx-panel border border-wx-border rounded p-2 text-[10px] text-slate-300 w-56 z-50 shadow-lg">
                 Estimated average rainfall rate for each 6-hour period.
                 Derived from GCOp tp06 output (metres/6h × 1000 / 6 → mm/hr, clamped ≥ 0).
-                Scale calibrated for January 2021 dry season (max observed: 1.62 mm/hr).
-                Values above 2 mm/hr saturate — rescale before serving wet-season forecasts.
+                Color scale is sqrt-transformed — spreads light rain across the palette.
+                Calibrated for January 2021 dry season (max: 1.62 mm/hr); values above 2 mm/hr saturate.
               </div>
             </div>
           </>
@@ -104,7 +107,7 @@ export function Legend() {
           <div
             key={t}
             className="absolute top-full mt-0.5 text-[9px] text-slate-400 -translate-x-1/2"
-            style={{ left: `${tickPosition(t, vmin, vmax)}%` }}
+            style={{ left: `${tickPosition(t, vmin, vmax, sqrtScale)}%` }}
           >
             {t}
           </div>

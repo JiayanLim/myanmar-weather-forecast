@@ -4,6 +4,7 @@
 **Date**: 2026-08-12 (v4 — new target: 7-day / 4-variable / ERA5 2021-01-01 / model TBD)
 **Revised**: 2026-08-16 (v5 — Spec Kit update phase RS; R4 timings corrected; phases added)
 **Revised**: 2026-08-17 (v6 — Phase R11 superseded; Phase R12 added; ADR-025)
+**Revised**: 2026-08-17 (v7 — Phase R13 precip sqrt scale; Phase R14 temperature context)
 **Spec**: `specs/001-myanmar-weather-app/spec.md`
 **Research**: `specs/001-myanmar-weather-app/research.md`
 **Constitution**: `.specify/memory/constitution.md` v3.0.0
@@ -337,7 +338,7 @@ See Phase 6. ModelEvaluation.tsx rewritten for verification.json schema v2.0.
 
 ---
 
-### Phase R10: Precipitation Color Scale Calibration — NOT STARTED
+### Phase R10: Precipitation Color Scale Calibration — COMPLETE (superseded by R13)
 
 **Classification**: Implementation defect fix (display calibration).
 **Prerequisite**: Binary spot-check passed (confirmed 2026-08-17 — see pre-R10 analysis).
@@ -385,7 +386,7 @@ Phase R12 replaces the canvas implementation with an SVG/`map.project()` approac
 
 ---
 
-### Phase R12: SVG Wind Arrow Overlay — Replacement for R11 — NOT STARTED
+### Phase R12: SVG Wind Arrow Overlay — Replacement for R11 — COMPLETE (2026-08-17, commit fb9a7cf)
 
 **Classification**: Defect fix + UX improvement. Replaces Phase R11 canvas arrows.
 **Prerequisite**: Phase R10 complete (✓). ADR-025 accepted (✓). R11 defects documented (✓).
@@ -416,6 +417,59 @@ SVG arrows positioned via `map.project()` for correct Mercator-projected placeme
 - No regression against 200ms step-transition requirement
 
 **Gate**: tsc 0 errors; build passes; full geographic distribution confirmed; deployed to main.
+
+---
+
+### Phase R13: Precipitation Sqrt Color Scale — COMPLETE (2026-08-17)
+
+**Classification**: Visualization calibration fix (FR-N23b). No data modification.
+**Prerequisite**: Phase R12 complete ✓. Diagnostic investigation complete ✓.
+**Scope**: `frontend/src/map/colorscales.ts`, `frontend/src/map/WeatherMap.tsx`,
+`frontend/src/components/Legend.tsx`.
+
+**Problem** (from diagnostic): R4 January 2021 precipitation is heavily right-skewed
+(P50=0.000288, P75=0.005, P90=0.028, P95=0.084, P99=0.406, max=1.620 mm/hr). Current linear
+scale with 0.020 mm/hr cutoff suppresses 87.8% of all values. Light rain (0.003–0.020 mm/hr)
+is invisible despite representing meaningful forecast signal in frames 12–28.
+
+**Solution** (FR-N23b):
+- `renderWithInterpolation`: add `sqrtScale?: boolean` param; apply `Math.sqrt(norm)` when true
+- `PRECIP_LUT_ALPHA`: recalibrated cutoffs in sqrt-norm space; v < 0.003 mm/hr → transparent
+- `PRECIP_TICKS`: [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0] mm/hr
+- WeatherMap.tsx precipitation call: `sqrtScale: true`
+- Legend tooltip: describe sqrt scale and dry-season calibration
+
+**Key metrics after fix** (sqrt at PRECIP_MAX=2):
+- P75 (0.005 mm/hr): norm=0.050 → faint visible trace
+- P90 (0.028 mm/hr): norm=0.118 → clearly visible
+- P95 (0.084 mm/hr): norm=0.205 → strong color
+- P99 (0.406 mm/hr): norm=0.450 → near-max color
+- Max (1.620 mm/hr): norm=0.900 → no saturation
+
+**Gate**: tsc 0 errors; build passes; light rain visible in frames 12–28 (>15% above 0.01);
+color differentiation preserved across the 0.01–1.62 mm/hr range.
+
+---
+
+### Phase R14: Temperature Display Context (Myanmar Local Time) — COMPLETE (2026-08-17)
+
+**Classification**: Display context improvement (FR-N30). No data modification.
+**Prerequisite**: Phase R13 complete.
+**Scope**: `frontend/src/map/WeatherMap.tsx` (popup), `frontend/src/components/InfoPanel.tsx`.
+
+**Problem** (from diagnostic): Default frame (t+0h = 00:00Z = 06:30 MMT pre-dawn) is the
+coolest part of the diurnal cycle. Yangon: 21.1°C at 06:30 MMT vs 28.9°C at 12:30 MMT.
+GCOp has a documented −0.76°C cold bias vs ERA5 (diurnal: −1.45°C at 12Z, ≈0 at 18Z).
+External weather sites show current temperatures, not January 2021 UTC timestamps.
+Temperature values are correct — the fix is display context, not data.
+
+**Solution** (FR-N30):
+- Popup: "Mon 01 Jan 2021 00:00:00 UTC · 06:30 MMT" format (UTC+6:30 fixed offset)
+- InfoPanel: "All times UTC. Myanmar Standard Time = UTC+6:30 (MMT, no daylight saving)."
+- InfoPanel temperature note: "GCOp cold bias −0.76°C vs ERA5 (documented); stronger at midday."
+- No data changes; no bias correction.
+
+**Gate**: tsc 0 errors; build passes; popup shows both UTC and MMT time.
 
 ---
 

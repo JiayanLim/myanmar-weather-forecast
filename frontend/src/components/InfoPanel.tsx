@@ -84,6 +84,10 @@ export function InfoPanel() {
                   <span className="text-white font-medium">
                     Temperature · {metadata.variables.temperature.display_unit}
                   </span>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    Times shown as UTC and Myanmar Standard Time (MMT = UTC+6:30, no DST).
+                    R5 validation for the Jan 2021 cycle shows a mean temperature bias of −0.76°C against ERA5 (one cycle only — not a universal model characterisation).
+                  </p>
                   <p className="text-slate-500 text-[10px] mt-0.5 font-mono">
                     {metadata.variables.temperature.conversion}
                   </p>
