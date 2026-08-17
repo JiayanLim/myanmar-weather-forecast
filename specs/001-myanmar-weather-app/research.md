@@ -1728,3 +1728,31 @@ Precipitation categorical scores (0.1 mm/hr threshold, totals from 28 frames × 
 - Wind direction circular convention: ADR-020
 - Schema for verification.json v2.0: this ADR
 - Forecast binary layout verified: ADR-019 (385,236 bytes / variable confirmed)
+
+---
+
+### ADR-024 — Authoritative Production Dataset: data/forecast_v4/; RS11–RS14 Deferred
+
+**Date**: 2026-08-17
+**Status**: ACCEPTED
+**Context**: Phase R4 produced a complete 7-day GCOp forecast (2021-01-01T00Z init, 29 frames, 4 variables, 0.25° Myanmar grid) stored in `data/forecast_v4/`. Phase R5 verified it against ERA5 reanalysis, producing `data/verification/verification.json` (schema v2.0). Phase R6 migrated the frontend to schema v4.0 with all four variables. Phase R9 committed all data artifacts, updated the deployment workflow to serve `data/forecast_v4/`, and confirmed a successful GitHub Pages deployment. Throughout R6–R9, the frontend operated exclusively on the real R4 dataset (`is_demo=false`); no synthetic demo data was required.
+
+**Decision**: `data/forecast_v4/` — the validated R4 GCOp output — is the authoritative production frontend dataset. It is committed to the repository and served by the GitHub Pages deployment workflow. Tasks RS11–RS14 (regeneration of `data/demo/` to schema v4.0 using `generate_demo_data.py`) are DEFERRED and OPTIONAL. They are not on the critical path for any currently deployed functionality.
+
+**Rationale**:
+1. The deployment workflow prefers `data/forecast_v4/`; `data/demo/` is only a fallback if `data/forecast_v4/` is absent or incomplete.
+2. `data/forecast_v4/` is present, complete (5 files, all 385,236 bytes each), and validated (schema v4.0, `is_demo=false`).
+3. The existing `data/demo/` directory contains schema v3.0 (2-variable) artifacts. They are not loaded by the current frontend and are not served to production.
+4. Generating schema v4.0 demo data requires a complete rewrite of `generate_demo_data.py` — meaningful effort with no current benefit, as production already serves real data.
+5. The primary value of demo data (offline development, CI without real forecast) is already satisfied by copying `data/forecast_v4/` artifacts to `frontend/public/data/` (done in R9).
+
+**Consequences**:
+- RS11–RS14 may be revisited if: (a) a new real-data forecast pipeline run is not available, (b) CI requires a lightweight synthetic fixture, or (c) a contributor explicitly needs offline development data independent of the committed real forecast.
+- `data/demo/` currently contains stale v3.0 artifacts; they should not be confused with schema v4.0 demo data.
+- Any future reauthorization of RS11–RS14 must update `generate_demo_data.py` for 4 variables, 81×41 grid, 29 frames, and `is_demo=true`.
+
+#### Relation to Other ADRs
+
+- Schema v4.0 canonical definition: ADR-019
+- Deployment workflow structure: task R100 (deploy-pages.yml)
+- Verification schema v2.0: ADR-023

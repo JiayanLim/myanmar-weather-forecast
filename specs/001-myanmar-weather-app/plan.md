@@ -63,7 +63,7 @@ README updated for GraphCastSmall/48h/M4.
 
 ## PART B — NEW TARGET PLAN (v4.0 — 2026-08-17)
 
-**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). Phase R4b pending (RS11–RS14). Live on GitHub Pages (commit 30ff08c).
+**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). RS10 COMPLETE. RS11–RS14 DEFERRED (ADR-024 — data/forecast_v4/ is authoritative production dataset). Live on GitHub Pages (commit 30ff08c).
 
 **Model**: GraphCastOperational (0.25°, JAX/Haiku, ARCO/ERA5 init)
 **R3 result**: PASS — M4 24 GB, peak RSS 1.99 GB post-compile, JIT cold ~27–34 min
@@ -212,7 +212,7 @@ Lock schema v4.0, ADR-019–022. No application code modified.
 - `data/forecast_v4/` — 4 binaries × 385,236 bytes + forecast.json (8,063 bytes); is_demo=false
 - `scripts/generate_forecast.py` — corrected to emit schema v4.0
 - `scripts/validate_forecast.py` — schema v4.0/v5.0, 4 variables, 29 frames
-- `data/demo/` — regeneration pending (Phase R4b, tasks RS11–RS14, not yet started)
+- `data/demo/` — contains stale v3.0 artifacts; RS11–RS14 DEFERRED per ADR-024 (not on critical path; production serves data/forecast_v4/)
 
 ---
 

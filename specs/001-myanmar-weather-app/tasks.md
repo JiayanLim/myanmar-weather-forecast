@@ -228,16 +228,20 @@ See ADR-017 in research.md.
 
 ---
 
-## Phase R4b: Schema v4.0 Finalization — IN PROGRESS (2026-08-17)
+## Phase R4b: Schema v4.0 Finalization — PARTIALLY COMPLETE — RS10 DONE; RS11–RS14 DEFERRED (OPTIONAL)
 
 **Prerequisite**: R041 complete (pipeline finishes); R044 passes; RS gate approved.
 **Scope**: Finalize schema version string in pipeline, regenerate demo data.
 **No frontend changes in this phase.**
+**Note (2026-08-17)**: RS10 complete. RS11–RS14 deferred per ADR-024 — `data/forecast_v4/` (real R4 data, `is_demo=false`) is the authoritative production dataset; synthetic demo regeneration is not on the critical path.
 
 - [x] RS10 Update `scripts/generate_forecast.py`: change `schema_version` emit from "5.0" → "4.0"
       COMPLETE (2026-08-17) — single string change at line 524; verified via grep.
 
-- [ ] RS11 Update `scripts/generate_demo_data.py` for schema v4.0:
+- [DEFERRED] RS11 Update `scripts/generate_demo_data.py` for schema v4.0:
+      Deferred per ADR-024. Not required — production serves data/forecast_v4/ (real data).
+      Resume only if: offline dev needs synthetic fixtures independent of committed real data,
+      or CI requires a lightweight fixture. Requires rewrite for 4 vars, 81×41, 29 frames.
       - 4 variables (precipitation, temperature, wind_speed, wind_direction)
       - 81 × 41 grid (matching GCOp Myanmar subset)
       - 29 frames at 6h steps
@@ -245,20 +249,24 @@ See ADR-017 in research.md.
       - is_demo: true; is_demo banner text preserved
       - Synthetic data: physically plausible ranges for all 4 variables
 
-- [ ] RS12 Run `uv run python scripts/generate_demo_data.py` and verify output:
+- [DEFERRED] RS12 Run `uv run python scripts/generate_demo_data.py` and verify output:
+      Deferred per ADR-024.
       - 4 binary files created in data/demo/
       - File sizes: each ~376 KB (29 × 81 × 41 × 4 bytes)
       - forecast.json: schema_version "4.0", 29 times, 4 variables, is_demo=true
 
-- [ ] RS13 Run `uv run python scripts/validate_forecast.py --data-dir data/demo/`:
+- [DEFERRED] RS13 Run `uv run python scripts/validate_forecast.py --data-dir data/demo/`:
+      Deferred per ADR-024.
       - 0 validation errors
       - All 4 variables present and within physical bounds
 
-- [ ] RS14 Copy demo artifacts to `frontend/public/data/`:
+- [DEFERRED] RS14 Copy demo artifacts to `frontend/public/data/`:
+      Deferred per ADR-024. `frontend/public/data/` already populated with data/forecast_v4/
+      artifacts (real data) in R9 — npm run dev works without synthetic demo data.
       - Copy data/demo/{forecast.json, precipitation.bin, temperature.bin, wind_speed.bin, wind_direction.bin}
-      - Required for `npm run dev` development server testing
 
-**Gate**: Demo data passes validate_forecast.py; schema_version "4.0" in all artifacts.
+**Gate (RS10)**: PASSED — schema_version "4.0" in generate_forecast.py.
+**Gate (RS11–RS14)**: DEFERRED — reauthorize explicitly before starting.
 
 ---
 
@@ -413,7 +421,7 @@ All R7 tasks completed as part of the unified R6 authorization. See Phase R6 abo
       per-file verify step; triggers on data/forecast_v4/**, data/verification/**, data/demo/**
 - [x] R101 Spec Kit committed (constitution v3.2.0, research+ADR-023, spec v6, plan, tasks v7)
 - [x] R102 Pipeline scripts committed (generate_forecast.py RS10 fix, verify_forecast.py R5)
-- [x] R103 data/demo/ committed (intermediate state; RS11 will regenerate to schema v4.0)
+- [x] R103 data/demo/ committed (intermediate state — contains stale v3.0 artifacts; RS11–RS14 DEFERRED per ADR-024; not served to production)
 - [x] R104 data/forecast_v4/ committed (5 files: 385,236 bytes each + forecast.json 8,063 bytes)
 - [x] R105 data/verification/verification.json committed (schema v2.0, 31,482 bytes)
 - [x] R106 tsc → 0 errors; npm run build → ✓ 1.50s
@@ -448,7 +456,8 @@ R001–R009 (research) → R010 (MODEL SELECTION GATE) → ...
                                                        ↓
                                               R040–R044 (7-day pipeline + validate)
                                                        ↓
-                                         RS10–RS14 (schema v4.0 finalize + demo data)
+                                         RS10 (schema v4.0 string fix — COMPLETE)
+                                         RS11–RS14 (demo data — DEFERRED, ADR-024)
                                                        ↓
                                          ┌─────────────┴─────────────┐
                                   R050–R052 (verification)    R060–R064 (data layer types)
