@@ -63,7 +63,7 @@ README updated for GraphCastSmall/48h/M4.
 
 ## PART B — NEW TARGET PLAN (v4.0 — 2026-08-17)
 
-**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5 COMPLETE. R6 COMPLETE (2026-08-17). Phase R4b pending (demo data). Phase 9 NOT STARTED.
+**Status**: Phases 1–5 COMPLETE. Phase RS COMPLETE. R4/R5/R6/R9 COMPLETE (2026-08-17). Phase R4b pending (RS11–RS14). Live on GitHub Pages (commit 30ff08c).
 
 **Model**: GraphCastOperational (0.25°, JAX/Haiku, ARCO/ERA5 init)
 **R3 result**: PASS — M4 24 GB, peak RSS 1.99 GB post-compile, JIT cold ~27–34 min
