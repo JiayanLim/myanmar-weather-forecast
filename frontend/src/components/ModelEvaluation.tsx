@@ -167,12 +167,21 @@ export function ModelEvaluation() {
 
           {data && mm && vars && (
             <>
-              {/* Reference caveat */}
+              {/* Single-cycle qualification — R4 */}
+              <div className="bg-amber-950/40 border border-amber-800/50 rounded p-3 text-[10px] leading-relaxed">
+                <span className="text-amber-300 font-semibold">Single-cycle evaluation — </span>
+                <span className="text-amber-200/70">
+                  based on one initialization ({mm.init_time}, {mm.forecast_horizon_hours / 24}-day cycle).
+                  A single cycle is insufficient to characterize general model performance.
+                  Treat all metrics below as an initial validation only.
+                </span>
+              </div>
+
+              {/* ERA5 methodology note */}
               <div className="bg-slate-800/60 border border-slate-700 rounded p-3 text-[10px] text-slate-400 leading-relaxed">
-                <span className="text-slate-300 font-semibold">Important: </span>
-                ERA5 is a numerical reanalysis product, not direct observations. GCOp was trained on ERA5;
-                comparison may be optimistic relative to independent observations. Single forecast cycle —
-                metrics are not statistically robust.
+                <span className="text-slate-300 font-semibold">Methodology: </span>
+                Verified against ERA5 reanalysis, not direct station observations. GCOp was trained on ERA5;
+                agreement may be optimistic relative to independent observations.
               </div>
 
               {/* Forecast provenance */}
@@ -190,11 +199,14 @@ export function ModelEvaluation() {
               {/* Temperature */}
               <div>
                 <h3 className="text-xs font-semibold text-white mb-1">2m Temperature vs ERA5</h3>
-                <p className="text-[10px] text-slate-400 mb-2">
+                <p className="text-[10px] text-slate-400 mb-1">
                   MAE: {vars.temperature.summary.mae.toFixed(4)}°C &nbsp;
                   RMSE: {vars.temperature.summary.rmse.toFixed(4)}°C &nbsp;
                   Bias: {sign(vars.temperature.summary.bias)}{vars.temperature.summary.bias.toFixed(4)}°C &nbsp;
-                  ({vars.temperature.summary.n_frames} frames)
+                  ({vars.temperature.summary.n_frames} frames incl. t+0h init state)
+                </p>
+                <p className="text-[10px] text-slate-500 mb-2 italic">
+                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state = ERA5 analysis; error = 0 by construction) excluded from table.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -206,16 +218,19 @@ export function ModelEvaluation() {
                     </tr>
                   </thead>
                   <tbody>
-                    {vars.temperature.by_lead_time.filter((_, i) => i % 4 === 0 || i === vars.temperature.by_lead_time.length - 1).map((r) => (
-                      <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
-                        <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
-                        <td className="py-1 pr-3 text-right">{r.mae.toFixed(4)}</td>
-                        <td className="py-1 pr-3 text-right">{r.rmse.toFixed(4)}</td>
-                        <td className={`py-1 text-right ${r.bias > 0.05 ? 'text-orange-400' : r.bias < -0.05 ? 'text-sky-400' : ''}`}>
-                          {sign(r.bias)}{r.bias.toFixed(4)}
-                        </td>
-                      </tr>
-                    ))}
+                    {vars.temperature.by_lead_time
+                      .filter((r) => r.lead_time_hours !== 0)
+                      .filter((_, i, arr) => i % 4 === 0 || i === arr.length - 1)
+                      .map((r) => (
+                        <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
+                          <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
+                          <td className="py-1 pr-3 text-right">{r.mae.toFixed(4)}</td>
+                          <td className="py-1 pr-3 text-right">{r.rmse.toFixed(4)}</td>
+                          <td className={`py-1 text-right ${r.bias > 0.05 ? 'text-orange-400' : r.bias < -0.05 ? 'text-sky-400' : ''}`}>
+                            {sign(r.bias)}{r.bias.toFixed(4)}
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -225,12 +240,18 @@ export function ModelEvaluation() {
                 <h3 className="text-xs font-semibold text-white mb-1">
                   Precipitation vs ERA5 (threshold: {data.precipitation_threshold_mm_hr} mm/hr)
                 </h3>
-                <p className="text-[10px] text-slate-400 mb-2">
+                <p className="text-[10px] text-slate-400 mb-1">
                   MAE: {vars.precipitation.summary.mae.toFixed(4)} mm/hr &nbsp;
                   POD: {vars.precipitation.summary.pod.toFixed(4)} &nbsp;
                   FAR: {vars.precipitation.summary.far.toFixed(4)} &nbsp;
                   CSI: {vars.precipitation.summary.csi.toFixed(4)} &nbsp;
-                  ({vars.precipitation.summary.n_frames} frames)
+                  ({vars.precipitation.summary.n_frames} frames, t+6h–t+{mm.forecast_horizon_hours}h)
+                </p>
+                <p className="text-[10px] text-slate-500 mb-1 italic">
+                  t+0h excluded: GCOp precipitation is 0 at initialization by convention — {vars.precipitation.summary.n_frames} frames verified vs {vars.temperature.summary.n_frames} for temperature/wind.
+                </p>
+                <p className="text-[10px] text-amber-600/80 mb-2">
+                  Jan 2021 (dry season): rain events are infrequent in Myanmar, which inflates FAR and suppresses CSI relative to wet-season conditions. Categorical scores from a single dry-season cycle require multi-cycle evaluation before generalization.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -259,11 +280,14 @@ export function ModelEvaluation() {
               {/* Wind Speed */}
               <div>
                 <h3 className="text-xs font-semibold text-white mb-1">10m Wind Speed vs ERA5</h3>
-                <p className="text-[10px] text-slate-400 mb-2">
+                <p className="text-[10px] text-slate-400 mb-1">
                   MAE: {vars.wind_speed.summary.mae.toFixed(4)} kt &nbsp;
                   RMSE: {vars.wind_speed.summary.rmse.toFixed(4)} kt &nbsp;
                   Bias: {sign(vars.wind_speed.summary.bias)}{vars.wind_speed.summary.bias.toFixed(4)} kt &nbsp;
-                  ({vars.wind_speed.summary.n_frames} frames)
+                  ({vars.wind_speed.summary.n_frames} frames incl. t+0h init state)
+                </p>
+                <p className="text-[10px] text-slate-500 mb-2 italic">
+                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state = ERA5 analysis; error = 0 by construction) excluded from table.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -275,16 +299,19 @@ export function ModelEvaluation() {
                     </tr>
                   </thead>
                   <tbody>
-                    {vars.wind_speed.by_lead_time.filter((_, i) => i % 4 === 0 || i === vars.wind_speed.by_lead_time.length - 1).map((r) => (
-                      <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
-                        <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
-                        <td className="py-1 pr-3 text-right">{r.mae.toFixed(4)}</td>
-                        <td className="py-1 pr-3 text-right">{r.rmse.toFixed(4)}</td>
-                        <td className={`py-1 text-right ${r.bias > 0.5 ? 'text-orange-400' : r.bias < -0.5 ? 'text-sky-400' : ''}`}>
-                          {sign(r.bias)}{r.bias.toFixed(4)}
-                        </td>
-                      </tr>
-                    ))}
+                    {vars.wind_speed.by_lead_time
+                      .filter((r) => r.lead_time_hours !== 0)
+                      .filter((_, i, arr) => i % 4 === 0 || i === arr.length - 1)
+                      .map((r) => (
+                        <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
+                          <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
+                          <td className="py-1 pr-3 text-right">{r.mae.toFixed(4)}</td>
+                          <td className="py-1 pr-3 text-right">{r.rmse.toFixed(4)}</td>
+                          <td className={`py-1 text-right ${r.bias > 0.5 ? 'text-orange-400' : r.bias < -0.5 ? 'text-sky-400' : ''}`}>
+                            {sign(r.bias)}{r.bias.toFixed(4)}
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -294,9 +321,12 @@ export function ModelEvaluation() {
                 <h3 className="text-xs font-semibold text-white mb-1">
                   10m Wind Direction vs ERA5 (calm excluded: &lt;{data.wind_direction_calm_threshold_kt} kt)
                 </h3>
-                <p className="text-[10px] text-slate-400 mb-2">
+                <p className="text-[10px] text-slate-400 mb-1">
                   Circular MAE: {vars.wind_direction.summary.circular_mae.toFixed(4)}° &nbsp;
-                  ({vars.wind_direction.summary.n_frames} frames incl. t+0h)
+                  ({vars.wind_direction.summary.n_frames} frames incl. t+0h init state)
+                </p>
+                <p className="text-[10px] text-slate-500 mb-2 italic">
+                  Table: forecast leads +6h–+{mm.forecast_horizon_hours}h only. t+0h (init state; circular MAE = 0 by construction) excluded from table.
                 </p>
                 <table className="w-full text-[10px] border-collapse">
                   <thead>
@@ -308,14 +338,17 @@ export function ModelEvaluation() {
                     </tr>
                   </thead>
                   <tbody>
-                    {vars.wind_direction.by_lead_time.filter((_, i) => i % 4 === 0 || i === vars.wind_direction.by_lead_time.length - 1).map((r) => (
-                      <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
-                        <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
-                        <td className="py-1 pr-3 text-right">{r.circular_mae.toFixed(4)}</td>
-                        <td className="py-1 pr-3 text-right">{r.n_points_active}</td>
-                        <td className="py-1 text-right">{r.n_points_calm_excluded}</td>
-                      </tr>
-                    ))}
+                    {vars.wind_direction.by_lead_time
+                      .filter((r) => r.lead_time_hours !== 0)
+                      .filter((_, i, arr) => i % 4 === 0 || i === arr.length - 1)
+                      .map((r) => (
+                        <tr key={r.lead_time_hours} className="border-b border-slate-800/60">
+                          <td className="py-1 pr-3 text-slate-300">+{r.lead_time_hours}h</td>
+                          <td className="py-1 pr-3 text-right">{r.circular_mae.toFixed(4)}</td>
+                          <td className="py-1 pr-3 text-right">{r.n_points_active}</td>
+                          <td className="py-1 text-right">{r.n_points_calm_excluded}</td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
