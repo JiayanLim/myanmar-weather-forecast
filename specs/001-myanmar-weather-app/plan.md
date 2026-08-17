@@ -5,6 +5,7 @@
 **Revised**: 2026-08-16 (v5 — Spec Kit update phase RS; R4 timings corrected; phases added)
 **Revised**: 2026-08-17 (v6 — Phase R11 superseded; Phase R12 added; ADR-025)
 **Revised**: 2026-08-17 (v7 — Phase R13 precip sqrt scale; Phase R14 temperature context)
+**Revised**: 2026-08-17 (v8 — Phase R15 Model Eval contextualization; Phase R16 Wind UI consolidation)
 **Spec**: `specs/001-myanmar-weather-app/spec.md`
 **Research**: `specs/001-myanmar-weather-app/research.md`
 **Constitution**: `.specify/memory/constitution.md` v3.0.0
@@ -470,6 +471,89 @@ Temperature values are correct — the fix is display context, not data.
 - No data changes; no bias correction.
 
 **Gate**: tsc 0 errors; build passes; popup shows both UTC and MMT time.
+
+---
+
+### Phase R15: Model Evaluation Contextualization — NOT STARTED
+
+**Classification**: UI content improvement (FR-N46a–FR-N46g). No data modification.
+**Prerequisite**: Phase R14 COMPLETE ✓. ModelEvaluation.tsx already renders basic tables.
+**Spec refs**: FR-N46a (metric definitions), FR-N46b (temporal convention), FR-N46c (limitations),
+  FR-N46d (temperature cold-bias context), FR-N46g (no qualitative ratings).
+
+**Scope**: `frontend/src/components/ModelEvaluation.tsx` only.
+No changes to: verification.json, verification scripts, forecast binaries, or any other file.
+
+**Work items**:
+
+1. Add "How to interpret these metrics" collapsible/always-visible section above data tables:
+   MAE, RMSE, Bias, wind-direction circular MAE, POD, FAR, CSI — one-line definition each.
+
+2. Expand/reword the temporal convention note (already partially present as italic text):
+   - Temperature/wind summary = 29 frames incl. t+0h; t+0h bias = 0 by construction; optimistic.
+   - Tables show +6h–+168h only (t+0h row excluded): more representative of forecast skill.
+   - Precipitation = 28 frames only; t+0h excluded by GCOp convention.
+
+3. Expand the limitations/caveats block into a prominent amber-bordered panel containing all four
+   points specified in FR-N46c (ERA5-not-stations; training-data advantage; N=1; dry season).
+
+4. Add temperature cold-bias context note within the temperature section (FR-N46d):
+   - R5 measured −0.7595°C mean bias vs ERA5.
+   - Live QA spot-check: ~−0.89°C mean across 4 sites × 4 frames; largest at 06Z (−1.23°C avg).
+   - Framing: "observed in the Jan 2021 validation cycle" only.
+   - Displayed values are raw GCOp output; no offset applied.
+
+5. Remove qualitative labels ("good", "reliable", "accurate") if any exist (FR-N46g).
+
+**Gate**: tsc 0 errors; build passes; all five FR-N46a–FR-N46d,g points visible in rendered panel;
+no qualitative accuracy claims introduced.
+
+---
+
+### Phase R16: Wind UI Consolidation — NOT STARTED
+
+**Classification**: UX simplification (FR-N20, FR-W01c, FR-N46e, FR-N46f). No data modification.
+**Prerequisite**: Phase R15 COMPLETE.
+**Spec refs**: FR-N20 (three-tab selector), FR-W01c (consolidated wind legend), FR-N46e/f (eval).
+
+**Scope**:
+- `frontend/src/data/types.ts` — `ActiveVariable` type
+- `frontend/src/components/VariableSwitcher.tsx` — three-tab UI
+- `frontend/src/components/Legend.tsx` — combined wind legend
+- `frontend/src/map/WindArrowOverlay.tsx` — trigger condition
+- `frontend/src/map/WeatherMap.tsx` — activeVariable guard if needed
+- `frontend/src/components/ModelEvaluation.tsx` — wind section grouping
+
+No changes to: wind_speed.bin, wind_direction.bin, ForecastLoader.ts,
+ForecastStore.ts wind arrays, WeatherMap.tsx canvas rendering logic, colorscales.ts.
+
+**Work items**:
+
+1. `types.ts`: Remove `'wind_direction'` from `ActiveVariable` union.
+   New type: `'precipitation' | 'wind_speed' | 'temperature'`
+
+2. `VariableSwitcher.tsx`: Replace four-button layout with three-button layout.
+   LABELS: `{ precipitation: 'Precip', wind_speed: 'Wind', temperature: 'Temp' }`
+
+3. `Legend.tsx`: When `activeVariable === 'wind_speed'`, render both:
+   (a) Wind-speed gradient bar (existing WIND_LUT_ALPHA scale, existing ticks).
+   (b) Divider.
+   (c) Compass-arrow direction widget (existing WindDirectionLegend content).
+   Remove the `activeVariable === 'wind_direction'` branch.
+
+4. `WindArrowOverlay.tsx`: Change trigger condition from
+   `activeVariable === 'wind_speed' || activeVariable === 'wind_direction'`
+   to `activeVariable === 'wind_speed'` only (wind_direction no longer a valid value).
+
+5. `WeatherMap.tsx`: Remove `wind_direction` guard (canvas transparent branch) — it is now
+   unreachable with the new `ActiveVariable` type. Confirm TypeScript catches any remaining refs.
+
+6. `ModelEvaluation.tsx`: Group wind speed and wind direction under a single
+   "10m Wind vs ERA5" section heading with separate subsections (FR-N46e, FR-N46f).
+
+**Gate**: tsc 0 errors; build passes; three tabs render (Precip / Wind / Temp); Wind tab shows
+speed raster + arrows + both legend sections; `wind_direction` removed from type system; model
+evaluation shows combined Wind section with speed and direction metrics separately.
 
 ---
 

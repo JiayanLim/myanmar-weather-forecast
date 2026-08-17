@@ -8,6 +8,7 @@
 **Revised**: 2026-08-17 v7 — R6 COMPLETE (types+loader+store+all components+build); R7 COMPLETE; R8 COMPLETE
 **Revised**: 2026-08-17 v8 — R10 COMPLETE; R11 COMPLETE (superseded by R12 — defect); R12 tasks added
 **Revised**: 2026-08-17 v10 — R13 COMPLETE (precip sqrt scale); R14 COMPLETE (MMT local time)
+**Revised**: 2026-08-17 v11 — R15 tasks added (Model Eval context); R16 tasks added (Wind UI consolidation)
 
 ---
 
@@ -659,6 +660,146 @@ See Phase R12 in plan.md. Distribution defect fixed; HSL raster retired; deploye
 | Light rainfall not disappearing | P90 (0.028 mm/hr): clearly visible; P95 (0.084): strong color. |
 | Color differentiation | P90 (0.028) visually distinct from P99 (0.406) and max (1.62). |
 | Precipitation data | precipitation.bin and verification.json: UNCHANGED. |
+
+---
+
+## Phase R15: Model Evaluation Contextualization — NOT STARTED
+
+**Classification**: UI content improvement (FR-N46a–FR-N46d, FR-N46g). No data modification.
+**Prerequisite**: Phase R14 COMPLETE ✓.
+**File modified**: `frontend/src/components/ModelEvaluation.tsx` only.
+**No changes to**: verification.json, forecast binaries, scripts, or any other file.
+
+- [ ] R15a Add "How to interpret these metrics" section (FR-N46a):
+      Render above the first data table. Include one-line definitions for:
+      MAE, RMSE, Bias, wind-direction circular MAE, POD, FAR, CSI.
+      Styling: collapsible or always-visible block with `h3` heading and `text-[10px]` body.
+      No qualitative labels.
+
+- [ ] R15b Rewrite/expand temporal evaluation convention note (FR-N46b):
+      - Temperature/wind 29-frame summary: t+0h included, error=0 by construction, optimistic.
+      - Per-lead-time tables: genuine +6h–+168h only (t+0h excluded from rows).
+      - Precipitation: 28 frames, t+0h excluded by GCOp convention.
+      Replace the current italic sentences with a structured note block.
+
+- [ ] R15c Expand limitations block (FR-N46c):
+      Replace current single-line amber banner and methodology note with a single
+      amber-bordered block containing all four points:
+      (1) ERA5 not independent station observations.
+      (2) GCOp trained on ERA5 — inherent reanalysis/training-data advantage.
+      (3) N=1 cycle (2021-01-01T00Z, 168h) — insufficient to characterise general performance.
+      (4) January 2021 dry season — precipitation categorical scores sensitive to few rain events.
+
+- [ ] R15d Add temperature cold-bias context note in temperature section (FR-N46d):
+      - R5 mean temperature bias: −0.7595°C vs ERA5.
+      - Live QA spot-check (4 sites × 4 frames): ~−0.89°C mean; largest at 06Z: −1.23°C avg.
+      - Label: "observed cold bias in the Jan 2021 validation cycle" only.
+      - State explicitly: displayed values are raw GCOp output; no offset applied.
+      - One cycle insufficient to generalise.
+
+- [ ] R15e Validate:
+      - `npx tsc --noEmit` → 0 errors
+      - `npm run build` → passes
+      - Panel renders all five new sections without layout overflow at max-h-[85vh]
+      - No qualitative accuracy claims ("good", "reliable", "accurate") present (FR-N46g)
+      - verification.json, forecast binaries, scripts: UNCHANGED
+
+- [ ] R15f Commit and push to main; confirm GitHub Pages redeploy.
+
+**Gate**: tsc 0 errors; build passes; all FR-N46a–FR-N46d, FR-N46g requirements visible in rendered panel.
+
+---
+
+## Phase R16: Wind UI Consolidation — NOT STARTED
+
+**Classification**: UX simplification (FR-N20, FR-W01c, FR-N46e, FR-N46f). No data modification.
+**Prerequisite**: Phase R15 COMPLETE.
+**Files modified**:
+  - `frontend/src/data/types.ts`
+  - `frontend/src/components/VariableSwitcher.tsx`
+  - `frontend/src/components/Legend.tsx`
+  - `frontend/src/map/WindArrowOverlay.tsx`
+  - `frontend/src/map/WeatherMap.tsx`
+  - `frontend/src/components/ModelEvaluation.tsx`
+**No changes to**: wind_speed.bin, wind_direction.bin, ForecastLoader.ts, ForecastStore.ts,
+  WeatherMap.tsx canvas rendering logic (wind_speed path), colorscales.ts.
+
+- [ ] R16a Edit `frontend/src/data/types.ts` (FR-N20):
+      Remove `'wind_direction'` from `ActiveVariable` union.
+      New type: `export type ActiveVariable = 'precipitation' | 'wind_speed' | 'temperature';`
+      Confirm no other types.ts changes required.
+
+- [ ] R16b Edit `frontend/src/components/VariableSwitcher.tsx` (FR-N20):
+      Replace four-button LABELS map with three:
+      `{ precipitation: 'Precip', wind_speed: 'Wind', temperature: 'Temp' }`
+      Remove `wind_direction` entry. Button order: Precip | Wind | Temp.
+
+- [ ] R16c Edit `frontend/src/components/Legend.tsx` (FR-W01c):
+      When `activeVariable === 'wind_speed'` (the Wind tab), render two sections separated by divider:
+      (a) Wind-speed gradient bar (existing scale: WIND_LUT_ALPHA, WIND_MIN, WIND_MAX, WIND_TICKS,
+          existing buildGradientStyle, existing tick marks).
+      (b) `<hr>` or thin divider.
+      (c) Compass-arrow direction widget (existing WindDirectionLegend JSX content).
+      Remove the `activeVariable === 'wind_direction'` branch (now unreachable).
+      The `WindDirectionLegend` function remains as a local helper called from wind_speed case.
+
+- [ ] R16d Edit `frontend/src/map/WindArrowOverlay.tsx` (FR-N20, FR-W01):
+      Change trigger condition to `activeVariable === 'wind_speed'` only.
+      Remove `|| activeVariable === 'wind_direction'` clause.
+
+- [ ] R16e Edit `frontend/src/map/WeatherMap.tsx` (FR-N20):
+      Remove the `wind_direction` branch in the canvas drawing effect:
+      ```ts
+      if (activeVariable === 'wind_direction') {
+        canvas.width = DISPLAY_N_LON;
+        canvas.height = DISPLAY_N_LAT;
+        return;  // transparent canvas
+      }
+      ```
+      This is now unreachable with the new ActiveVariable type; TypeScript will confirm after R16a.
+      Confirm no `wind_direction` references remain (search and verify).
+
+- [ ] R16f Edit `frontend/src/components/ModelEvaluation.tsx` (FR-N46e, FR-N46f):
+      Group wind speed and wind direction under a single "10m Wind vs ERA5" `<h3>` heading.
+      Retain separate subsections internally:
+      - "Wind Speed" sub-row with MAE/RMSE/Bias summary and per-lead-time table.
+      - "Wind Direction" sub-row with circular MAE summary and per-lead-time table.
+      Add note: "Wind speed and direction are presented in a combined Wind view. The metrics
+      below cover each component separately." (FR-N46f).
+
+- [ ] R16g Validate:
+      - `npx tsc --noEmit` → 0 errors (confirms `wind_direction` removed from type system)
+      - `npm run build` → passes
+      - Three tabs render: Precip | Wind | Temp
+      - Wind tab: speed raster rendered + SVG arrows visible + both legend sections visible
+      - Popup: continues showing all four values (wind speed kt + wind direction °FROM)
+      - wind_speed.bin, wind_direction.bin, ForecastLoader.ts, ForecastStore.ts: UNCHANGED
+      - verification.json: UNCHANGED
+
+- [ ] R16h Commit and push to main; confirm GitHub Pages redeploy.
+
+**Gate**: tsc 0 errors; build passes; three tabs; Wind tab shows raster + arrows + combined legend;
+`wind_direction` fully removed from ActiveVariable type with zero TypeScript errors.
+
+---
+
+## Acceptance Criteria (R15 + R16)
+
+| Criterion | Specification |
+|---|---|
+| Metric definitions present | MAE, RMSE, Bias, circ MAE, POD, FAR, CSI all defined in panel |
+| Temporal convention stated | 29-frame summary note + t+0h=0 by construction disclosed |
+| Precipitation frame count noted | "28 frames, t+0h excluded by GCOp convention" present |
+| Limitations block complete | All 4 points (ERA5 not obs; training advantage; N=1; dry season) visible |
+| Temperature bias note | −0.7595°C R5 + −0.89°C QA spot-check; "Jan 2021 cycle only"; no offset |
+| No qualitative labels | "good/bad/accurate/reliable" absent without stated baseline |
+| Three variable tabs | Precip / Wind / Temp (Wind Direction tab removed) |
+| Wind tab raster | wind_speed raster renders when Wind tab active |
+| Wind tab arrows | SVG arrows visible when Wind tab active |
+| Wind tab legend | Both speed gradient bar and compass direction widget visible |
+| ActiveVariable type | `wind_direction` removed; tsc 0 errors |
+| Data unchanged | wind_speed.bin, wind_direction.bin, verification.json all UNCHANGED |
+| Popup unchanged | All four variable values still shown in point inspector |
 
 ---
 

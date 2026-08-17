@@ -3,10 +3,9 @@ import { useForecastStore } from '../data/ForecastStore';
 import type { ActiveVariable } from '../data/types';
 
 const LABELS: Record<ActiveVariable, string> = {
-  precipitation:  'Precip',
-  temperature:    'Temp',
-  wind_speed:     'Wind Speed',
-  wind_direction: 'Wind Dir',
+  precipitation: 'Precip',
+  wind_speed:    'Wind',
+  temperature:   'Temp',
 };
 
 export function VariableSwitcher() {

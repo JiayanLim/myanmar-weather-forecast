@@ -66,5 +66,7 @@ export interface ForecastMetadata {
   is_demo: boolean;
 }
 
-export type ActiveVariable = 'precipitation' | 'temperature' | 'wind_speed' | 'wind_direction';
+// wind_direction removed as selectable tab (R16). wind_direction data binary remains loaded
+// and used for rendering arrows and popup display, but is no longer a selectable ActiveVariable.
+export type ActiveVariable = 'precipitation' | 'temperature' | 'wind_speed';
 export type PlaybackSpeed = 0.5 | 1 | 2 | 4;

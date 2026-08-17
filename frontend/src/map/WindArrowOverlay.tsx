@@ -53,7 +53,7 @@ export function WindArrowOverlay({ map }: Props) {
       !metadata ||
       !windSpeed ||
       !windDirection ||
-      (activeVariable !== 'wind_speed' && activeVariable !== 'wind_direction')
+      activeVariable !== 'wind_speed'
     ) {
       setArrows([]);
       return;
@@ -115,7 +115,7 @@ export function WindArrowOverlay({ map }: Props) {
     };
   }, [map, rebuild]);
 
-  if (activeVariable !== 'wind_speed' && activeVariable !== 'wind_direction') return null;
+  if (activeVariable !== 'wind_speed') return null;
   if (arrows.length === 0) return null;
 
   return (

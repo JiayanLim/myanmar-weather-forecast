@@ -153,14 +153,6 @@ export function WeatherMap() {
     // MODEL_STEP derived at runtime from metadata (ADR-019 / FR-N11)
     const modelStep = metadata.native_resolution_deg;
 
-    // wind_direction view: no raster — SVG arrows (WindArrowOverlay) over basemap (FR-W01a)
-    if (activeVariable === 'wind_direction') {
-      canvas.width  = DISPLAY_N_LON;
-      canvas.height = DISPLAY_N_LAT;
-      // Leave canvas transparent; arrows rendered by WindArrowOverlay SVG overlay
-      return;
-    }
-
     const [data, lut, vmin, vmax] =
       activeVariable === 'temperature' && temperature
         ? [temperature, TEMP_LUT,       TEMP_MIN, TEMP_MAX]
@@ -246,9 +238,7 @@ export function WeatherMap() {
         activeVariable === 'temperature'
           ? ['Temperature',  fmt(tempVal,   1, '°C')]
           : activeVariable === 'wind_speed'
-          ? ['Wind Speed',   fmt(wsVal,     1, 'kt')]
-          : activeVariable === 'wind_direction'
-          ? ['Wind Direction', wdStr]
+          ? ['Wind',         `${fmt(wsVal, 1, 'kt')} · ${isNaN(wdVal) ? '—' : wdStr}`]
           : ['Precipitation', fmt(precipVal, 2, 'mm/hr')];
 
       content = `
@@ -262,8 +252,6 @@ export function WeatherMap() {
           </div>
           ${activeVariable === 'precipitation'
             ? `<div class="wx-popup-note">Estimated avg. rainfall rate (6h window)</div>`
-            : activeVariable === 'wind_direction'
-            ? `<div class="wx-popup-note">Meteorological FROM direction</div>`
             : ''
           }
           <hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:6px 0"/>

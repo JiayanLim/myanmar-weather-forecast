@@ -9,6 +9,7 @@
 **Revised**: 2026-08-17 v6 — FR-N40–N45 COMPLETE; ADR-023 closed; R4/R5 COMPLETE
 **Revised**: 2026-08-17 v7 — FR-W01–FR-W07 rewritten (SVG overlay, R12); ADR-025; FR-N23 updated
 **Revised**: 2026-08-17 v8 — FR-N23b (precip sqrt scale), FR-N30 (MMT local time); R13/R14 diagnostic findings
+**Revised**: 2026-08-17 v9 — FR-N20 updated (Wind tab consolidation, R16); FR-N46 expanded (Model Eval context, R15); FR-W01c added
 **Status**: LEGACY (v3) deployed. NEW TARGET (v4) R4/R5 COMPLETE — R6 NOT STARTED.
 **Constitution**: `.specify/memory/constitution.md` v3.2.0
 
@@ -151,7 +152,7 @@ an interactive map UI.
 #### User Story 1 — View Myanmar 7-Day Weather Map [P1, DRAFT]
 
 A user opens the app and immediately sees a weather map centered on Myanmar, showing
-one of four meteorological variables at the initialization hour.
+one of three meteorological views (Precipitation / Wind / Temperature) at the initialization hour.
 
 **Acceptance scenarios**:
 1. Map renders Myanmar with colored overlay for the selected variable; legend shows correct units
@@ -234,7 +235,18 @@ Do NOT implement until the forecast pipeline is working and verified.
 
 #### Frontend Requirements [CONFIRMED — implementation pending Phase R6/R7]
 
-- **FR-N20**: Four-variable selector (Precipitation / Wind Direction / Wind Speed / Temperature)
+- **FR-N20**: Three-tab variable selector (Precipitation / Wind / Temperature). (R16, 2026-08-17)
+  The separate "Wind Speed" and "Wind Direction" tabs are consolidated into a single "Wind" tab.
+  When "Wind" is active:
+  - The wind-speed raster is rendered (speed colorscale, 0–30 kt).
+  - SVG wind-direction arrows are overlaid (same as current wind_speed + wind_direction views).
+  - The legend panel shows both the wind-speed gradient bar and the compass-arrow direction widget.
+  - Popup continues to display wind speed (kt) and wind direction (°FROM / compass label) separately.
+  The `wind_speed` and `wind_direction` binary data variables are NOT merged; they remain separate
+  in ForecastStore, ForecastLoader, and verification.json. `ActiveVariable` type is updated:
+  `wind_direction` is retired as a selectable value; `wind_speed` becomes the canonical internal
+  state for the Wind tab. `WindArrowOverlay` triggers on `activeVariable === 'wind_speed'` only.
+  No change to WeatherMap canvas logic for wind_speed rendering.
 - **FR-N21**: Timeline derived dynamically from forecast.json (n_times=29, native_timestep_hours=6)
 - **FR-N22**: Lead time markers at 24h intervals — every 4th frame at 6h step (frames 0,4,8,12,16,20,24,28)
 - **FR-N23**: Variable-aware legend for all four variables with correct units and color scales.
@@ -306,18 +318,26 @@ Do NOT implement until the forecast pipeline is working and verified.
 high-wind points visible); (2) HSL rasterization not user-readable. Phase R12 and ADR-025 replace
 the R11 implementation entirely.
 
-- **FR-W01**: When `wind_speed` or `wind_direction` is the active variable, render a sparse SVG
+- **FR-W01**: When `wind_speed` is the active variable (the Wind tab), render a sparse SVG
   vector field of directional arrows positioned via `map.project([lon, lat])` screen coordinates.
   The SVG overlay is a sibling `<div>` of the map container div, styled
   `position: absolute; inset: 0; pointer-events: none`. No canvas drawing for arrows.
   Recompute on every `map.move` and `map.resize` event.
 
-- **FR-W01a**: For `wind_direction`: canvas is transparent (no raster rendered). Arrows appear
-  directly over the basemap. The `renderWindDirectionWithInterpolation` HSL raster is retired as
-  the primary view; arrows are the sole direction encoding. The hue-wheel legend is removed.
+- **FR-W01a**: SUPERSEDED by R16. The `wind_direction` tab is retired as a selectable ActiveVariable
+  (FR-N20, R16). The transparent-canvas branch is removed from WeatherMap.tsx. Arrow display is
+  consolidated into the Wind (wind_speed) tab. The hue-wheel HSL raster remains retired (R12).
 
 - **FR-W01b**: For `wind_speed`: retain the existing speed color raster. SVG arrows are overlaid,
   encoding direction (angle) and relative speed (length).
+
+- **FR-W01c**: Wind tab consolidated legend (R16). When `activeVariable === 'wind_speed'` (the Wind
+  tab), the Legend component renders both:
+  (a) Wind-speed gradient bar (0–30 kt, existing WIND_LUT_ALPHA scale, existing tick marks).
+  (b) Compass-arrow direction widget (existing four-arrow N/E/S/W SVG, existing "FROM" description).
+  The two legend sections are separated by a thin divider.
+  The `wind_direction` branch of the Legend component is removed (it was shown only when
+  `activeVariable === 'wind_direction'`, which no longer exists as a selectable value).
 
 - **FR-W02**: Sampling: `WIND_ARROW_GRID_STEP = 3`. Sample every 3rd model grid point in both
   lat and lon. 81×41 → ~27×14 = ~378 candidates before calm filtering. Sampling is uniform in
@@ -376,7 +396,69 @@ the R11 implementation entirely.
   — COMPLETE: 0.25° exact grid match; lat_err=0°, lon_err=0° (no interpolation)
   — variable `total_precipitation`: 1-hour accumulation ending at each timestamp (confirmed)
 
-- **FR-N46**: ModelEvaluation popup in frontend (FUTURE; do NOT implement yet)
+- **FR-N46**: ModelEvaluation popup in frontend — partially implemented (R8, commit untracked);
+  contextualization requirements added R15 (2026-08-17). See FR-N46a–FR-N46g below.
+
+- **FR-N46a**: Metric definitions panel (R15). The Model Evaluation panel MUST include a clearly
+  labelled "How to interpret these metrics" section above the data tables, defining:
+  - **MAE**: Mean Absolute Error — average magnitude of the forecast error.
+  - **RMSE**: Root Mean Square Error — penalises larger errors more strongly than MAE.
+  - **Bias**: Signed mean error; negative = systematic under-forecasting; positive = over-forecasting.
+  - **Wind-direction circular MAE**: Shortest angular difference between forecast and ERA5 direction,
+    avoiding the 0°/360° discontinuity. Formula: `diff = ((fcst − era5 + 180) % 360) − 180`.
+  - **POD**: Probability of Detection — proportion of observed precipitation events correctly detected.
+  - **FAR**: False Alarm Ratio — proportion of forecast precipitation events that were false alarms.
+  - **CSI**: Critical Success Index — combined detection score accounting for hits, misses, and
+    false alarms. Formula: `CSI = hits / (hits + misses + false_alarms)`.
+  The definitions must be rendered as a collapsible or always-visible block with heading.
+  No qualitative labels ("good", "bad", "accurate") unless a stated baseline is provided.
+
+- **FR-N46b**: Temporal evaluation convention note (R15). The panel MUST display:
+  - Temperature and wind summary metrics span 29 frames including t+0h.
+  - t+0h is the ERA5 analysis/initialization state; forecast error = 0 by construction.
+    This makes the 29-frame summary slightly optimistic for forecast-only skill assessment.
+  - The per-lead-time tables show genuine forecast leads +6h through +168h only (t+0h excluded
+    from the table rows), and are the more representative view of model performance.
+  - Precipitation evaluation covers 28 forecast frames only because t+0h precipitation is
+    excluded by the GCOp convention (tp06 = 0 at initialization).
+  This note must appear before or alongside the summary metric rows.
+
+- **FR-N46c**: Important limitations block (R15). The panel MUST display a prominently styled
+  limitations/caveats block containing all four of:
+  (1) Verification is against ERA5 reanalysis, not independent station observations.
+  (2) GCOp was trained on ERA5; agreement may be optimistic relative to independent observations
+      due to an inherent reanalysis/training-data advantage.
+  (3) Results represent one forecast cycle only: 2021-01-01T00Z, 168h horizon. N=1 is insufficient
+      to characterise general model performance across seasons or weather regimes.
+  (4) January 2021 is a dry-season cycle; precipitation categorical metrics (POD/FAR/CSI) are
+      particularly sensitive to the small number of rain events in this period.
+  Style: amber/warning-tone border, visible at-a-glance.
+
+- **FR-N46d**: Temperature cold-bias context (R15). The panel MUST include, in the temperature
+  section, a factual note stating:
+  - The R5 Jan 2021 validation measured a mean temperature bias of −0.7595°C against ERA5.
+  - A subsequent live QA spot-check (4 sites × 4 frames) found approximately −0.89°C mean bias,
+    with the largest deviation at local midday (06Z / 12:30 MMT, −1.23°C avg).
+  - This is described as an "observed cold bias in the Jan 2021 validation cycle" only.
+    It MUST NOT be described as a universal GCOp correction or characteristic.
+  - The displayed temperature values are the raw GCOp forecast output; no offset is applied.
+  - One cycle is insufficient to determine whether this bias generalises to other seasons or
+    initialization dates.
+
+- **FR-N46e**: Wind section consolidation in Model Evaluation (R16). Under a single "10m Wind"
+  section heading, present wind speed and wind direction metrics separately:
+  - Wind speed: MAE, RMSE, Bias (kt) — summary row + per-lead-time table.
+  - Wind direction: circular MAE (°) — summary + per-lead-time table.
+  These remain distinct subsections with their own column headers and units.
+  Do not combine into a single score.
+
+- **FR-N46f**: Model Evaluation must note the wind tab consolidation (R16):
+  "Wind speed and direction are presented in a combined Wind view. The metrics below cover each
+  component separately."
+
+- **FR-N46g**: No qualitative ratings. The panel MUST NOT include language such as "good accuracy",
+  "reliable", "accurate forecast", "performs well", or equivalent unless paired with a stated
+  quantitative baseline or skill score relative to a reference (e.g. climatology or persistence).
 
 ### New Target Non-Functional Requirements [CONFIRMED]
 
@@ -393,7 +475,8 @@ the R11 implementation entirely.
 - **ForecastFrame**: one model step of one variable at one lead time
 - **ForecastArtifact**: forecast.json (schema v4.0) + 4 float32 binary files
 - **Variable**: precipitation (mm/hr), wind_direction (°FROM), wind_speed (kt), temperature (°C)
-- **ActiveVariable**: currently displayed variable (one of four)
+- **ActiveVariable**: currently displayed variable (one of three after R16): `precipitation | wind_speed | temperature`.
+  `wind_direction` remains a data variable (binary + verification) but is no longer a selectable tab value.
 - **GridPoint**: one lat/lon point in Myanmar 81×41 subset at 0.25°
 
 ### Resolved Architecture Questions (all confirmed R1–R3, 2026-08-12–16)
