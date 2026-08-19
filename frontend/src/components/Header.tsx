@@ -48,10 +48,6 @@ export function Header() {
                 <> · {metadata.display_resolution_deg}° display</>
               )}
             </span>
-            <span>·</span>
-            <span>Init: {formatInitTime(metadata.initialization_time)}</span>
-            <span>·</span>
-            <span>Source: {metadata.initialization_source}</span>
             {!isDemo && isForecastStale(metadata.forecast_generated_at, metadata.forecast_horizon_hours) && (
               <>
                 <span>·</span>

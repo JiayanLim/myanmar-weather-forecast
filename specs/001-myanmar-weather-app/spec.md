@@ -10,6 +10,7 @@
 **Revised**: 2026-08-17 v7 — FR-W01–FR-W07 rewritten (SVG overlay, R12); ADR-025; FR-N23 updated
 **Revised**: 2026-08-17 v8 — FR-N23b (precip sqrt scale), FR-N30 (MMT local time); R13/R14 diagnostic findings
 **Revised**: 2026-08-17 v9 — FR-N20 updated (Wind tab consolidation, R16); FR-N46 expanded (Model Eval context, R15); FR-W01c added
+**Revised**: 2026-08-19 v10 — FR-W01c revised (compass widget removed, R17); FR-N25 refined (Init/Source removed from header, R17)
 **Status**: LEGACY (v3) deployed. NEW TARGET (v4) R4/R5 COMPLETE — R6 NOT STARTED.
 **Constitution**: `.specify/memory/constitution.md` v3.2.0
 
@@ -293,7 +294,11 @@ Do NOT implement until the forecast pipeline is working and verified.
   - No modification to temperature.bin, forecast.json, or verification.json.
 
 - **FR-N24**: Popup displays all four variable values at clicked grid point for current step
-- **FR-N25**: Header: "Myanmar 7-Day AI Weather Forecast" (derived from forecast_horizon_hours=168)
+- **FR-N25**: Header title: "Myanmar {N}-Day Weather Forecast" (N derived from forecast_horizon_hours).
+  Header sub-row: model name, native resolution (e.g. "0.25° model"), and staleness warning if
+  the forecast was generated more than forecast_horizon_hours ago.
+  Init time and initialization source are NOT shown in the header sub-row (R17); they are
+  available in the Info panel (FR-N26) where there is sufficient space to display them clearly.
 - **FR-N26**: Info panel: model, 0.25° resolution (~28 km), timestep, init time (2021-01-01T00Z),
   source (ERA5), per-variable unit disclosures, initialization vs training distinction
 - **FR-N27**: Precipitation disclosure: "Estimated average rainfall rate (mm/hr) during the
@@ -331,13 +336,14 @@ the R11 implementation entirely.
 - **FR-W01b**: For `wind_speed`: retain the existing speed color raster. SVG arrows are overlaid,
   encoding direction (angle) and relative speed (length).
 
-- **FR-W01c**: Wind tab consolidated legend (R16). When `activeVariable === 'wind_speed'` (the Wind
-  tab), the Legend component renders both:
+- **FR-W01c**: Wind tab legend (R16, revised R17). When `activeVariable === 'wind_speed'` (the Wind
+  tab), the Legend component renders the wind-speed gradient bar only:
   (a) Wind-speed gradient bar (0–30 kt, existing WIND_LUT_ALPHA scale, existing tick marks).
-  (b) Compass-arrow direction widget (existing four-arrow N/E/S/W SVG, existing "FROM" description).
-  The two legend sections are separated by a thin divider.
-  The `wind_direction` branch of the Legend component is removed (it was shown only when
-  `activeVariable === 'wind_direction'`, which no longer exists as a selectable value).
+  The compass-arrow direction widget (four-arrow N/E/S/W SVG) is NOT rendered in the legend.
+  Rationale (R17): arrows on the map are self-explanatory; the compass widget added visual clutter
+  that obstructed map area on mobile without adding actionable information.
+  The arrow overlay (WindArrowOverlay.tsx) and all wind-direction data/calculations are unchanged.
+  The `wind_direction` branch of the Legend component remains absent (retired in R16).
 
 - **FR-W02**: Sampling: `WIND_ARROW_GRID_STEP = 3`. Sample every 3rd model grid point in both
   lat and lon. 81×41 → ~27×14 = ~378 candidates before calm filtering. Sampling is uniform in

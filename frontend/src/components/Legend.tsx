@@ -102,39 +102,6 @@ export function Legend() {
         )}
       </div>
 
-      {/* ── Wind direction compass widget (FR-W01c) ─────── */}
-      {isWind && (
-        <>
-          <div className="border-t border-slate-700/60 mt-1 pt-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] text-slate-400">Wind Direction (FROM)</span>
-              <span className="text-[10px] text-slate-500">arrow overlay</span>
-            </div>
-            <div className="flex items-center justify-center gap-4 py-0.5">
-              {[
-                { label: 'N', angle: 180 },
-                { label: 'E', angle: 270 },
-                { label: 'S', angle: 0   },
-                { label: 'W', angle: 90  },
-              ].map(({ label, angle }) => (
-                <div key={label} className="flex flex-col items-center gap-0.5">
-                  <svg width="16" height="16" viewBox="-8 -8 16 16" aria-hidden="true">
-                    <g transform={`rotate(${angle})`}>
-                      <line x1="0" y1="5" x2="0" y2="-5" stroke="white" strokeOpacity="0.85" strokeWidth="1.5" strokeLinecap="round"/>
-                      <polygon points="0,-5 -2.5,-1 2.5,-1" fill="white" fillOpacity="0.85"/>
-                    </g>
-                  </svg>
-                  <span className="text-[9px] text-slate-400">{label}</span>
-                </div>
-              ))}
-            </div>
-            <div className="text-[9px] text-slate-500 leading-tight mt-1">
-              Arrows point <span className="text-slate-300">toward</span> wind destination ·
-              meteorological FROM convention · calm &lt; 2 kt hidden
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 }
